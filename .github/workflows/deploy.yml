@@ -28,21 +28,221 @@ jobs:
         push: true
         tags: ${{ secrets.DOCKER_USERNAME }}/university-app:latest
         
-    - name: Deploy to server
+    - name: Setup database on server
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.SERVER_HOST }}
         username: ${{ secrets.SERVER_USERNAME }}
         key: ${{ secrets.SERVER_SSH_KEY }}
         port: ${{ secrets.SERVER_PORT }}
+        timeout: 60s
+        command_timeout: 15m
         script: |
+          # Остановка и удаление старых контейнеров
+          docker stop university-postgres || true
+          docker rm university-postgres || true
+          
+          # Запуск PostgreSQL
+          docker run -d --name university-postgres \
+            -e POSTGRES_DB=university \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -p 5432:5432 \
+            -v university_postgres_data:/var/lib/postgresql/data \
+            postgres:15
+          
+          # Ожидание готовности БД
+          echo "Ожидание готовности базы данных..."
+          sleep 30
+          
+          # Проверка готовности БД
+          until docker exec university-postgres pg_isready -U postgres; do
+            echo "Ожидание готовности PostgreSQL..."
+            sleep 2
+          done
+          
+          echo "База данных запущена и готова к работе"
+          
+    - name: Deploy application to server
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USERNAME }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        port: ${{ secrets.SERVER_PORT }}
+        timeout: 60s
+        command_timeout: 15m
+        script: |
+          # Подтягивание нового образа
           docker pull ${{ secrets.DOCKER_USERNAME }}/university-app:latest
+          
+          # Остановка и удаление старого приложения
           docker stop university-app || true
           docker rm university-app || true
+          
+          # Запуск нового приложения
           docker run -d --name university-app -p 8080:8080 \
-            -e DB_HOST=host.docker.internal \
+            -e DB_HOST=university-postgres \
             -e DB_PORT=5432 \
             -e DB_NAME=university \
             -e DB_USER=postgres \
             -e DB_PASSWORD=postgres \
+            --link university-postgres:postgres \
             ${{ secrets.DOCKER_USERNAME }}/university-app:latest
+          
+          echo "Приложение успешно развернуто!"
+          
+    - name: Initialize database with data
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USERNAME }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        port: ${{ secrets.SERVER_PORT }}
+        timeout: 60s
+        command_timeout: 10m
+        script: |
+          # Создание SQL файлов для инициализации
+          cat > /tmp/init_db.sql << 'EOF'
+          -- Создание таблиц для университетской базы данных
+          
+          -- Создание таблицы факультетов
+          CREATE TABLE IF NOT EXISTS faculties (
+              id SERIAL PRIMARY KEY,
+              faculty_name VARCHAR(100) NOT NULL
+          );
+          
+          -- Создание таблицы групп
+          CREATE TABLE IF NOT EXISTS groups (
+              id SERIAL PRIMARY KEY,
+              group_name VARCHAR(50) NOT NULL,
+              faculty_id INTEGER REFERENCES faculties(id)
+          );
+          
+          -- Создание таблицы студентов
+          CREATE TABLE IF NOT EXISTS students (
+              id SERIAL PRIMARY KEY,
+              full_name VARCHAR(100) NOT NULL,
+              group_id INTEGER REFERENCES groups(id),
+              enrollment_year INTEGER NOT NULL
+          );
+          
+          -- Создание таблицы курсов
+          CREATE TABLE IF NOT EXISTS courses (
+              id SERIAL PRIMARY KEY,
+              course_name VARCHAR(100) NOT NULL,
+              credits INTEGER NOT NULL
+          );
+          
+          -- Создание таблицы преподавателей
+          CREATE TABLE IF NOT EXISTS lecturers (
+              id SERIAL PRIMARY KEY,
+              full_name VARCHAR(100) NOT NULL,
+              department VARCHAR(100) NOT NULL
+          );
+          
+          -- Создание таблицы записей о зачислении на курсы
+          CREATE TABLE IF NOT EXISTS enrollments (
+              id SERIAL PRIMARY KEY,
+              student_id INTEGER REFERENCES students(id),
+              course_id INTEGER REFERENCES courses(id),
+              grade INTEGER CHECK (grade >= 1 AND grade <= 5)
+          );
+          
+          -- Создание таблицы преподавания
+          CREATE TABLE IF NOT EXISTS teaching (
+              id SERIAL PRIMARY KEY,
+              lecturer_id INTEGER REFERENCES lecturers(id),
+              course_id INTEGER REFERENCES courses(id),
+              semester VARCHAR(20) NOT NULL
+          );
+          
+          -- Создание индексов для улучшения производительности
+          CREATE INDEX IF NOT EXISTS idx_students_group_id ON students(group_id);
+          CREATE INDEX IF NOT EXISTS idx_groups_faculty_id ON groups(faculty_id);
+          CREATE INDEX IF NOT EXISTS idx_enrollments_student_id ON enrollments(student_id);
+          CREATE INDEX IF NOT EXISTS idx_enrollments_course_id ON enrollments(course_id);
+          CREATE INDEX IF NOT EXISTS idx_teaching_lecturer_id ON teaching(lecturer_id);
+          CREATE INDEX IF NOT EXISTS idx_teaching_course_id ON teaching(course_id);
+          EOF
+          
+          # Выполнение создания таблиц
+          docker exec -i university-postgres psql -U postgres -d university < /tmp/init_db.sql
+          
+          # Проверка, есть ли уже данные
+          DATA_EXISTS=$(docker exec university-postgres psql -U postgres -d university -t -c "SELECT COUNT(*) FROM students;" 2>/dev/null | tr -d ' ')
+          
+          if [ "$DATA_EXISTS" = "0" ] || [ -z "$DATA_EXISTS" ]; then
+            echo "Заполнение базы данных тестовыми данными..."
+            
+            # Создание файла с тестовыми данными
+            cat > /tmp/insert_data.sql << 'EOF'
+          -- Вставка факультетов
+          INSERT INTO faculties (faculty_name) VALUES
+          ('Факультет информационных технологий'),
+          ('Факультет экономики и управления');
+          
+          -- Вставка групп
+          INSERT INTO groups (group_name, faculty_id) VALUES
+          ('ИТ-21-1', 1),
+          ('ИТ-21-2', 1),
+          ('ЭУ-21-1', 2),
+          ('ЭУ-21-2', 2);
+          
+          -- Вставка курсов
+          INSERT INTO courses (course_name, credits) VALUES
+          ('Программирование на Python', 4),
+          ('Базы данных', 3),
+          ('Экономика предприятия', 3),
+          ('Менеджмент', 2);
+          
+          -- Вставка преподавателей
+          INSERT INTO lecturers (full_name, department) VALUES
+          ('Иванов Иван Иванович', 'Кафедра программирования'),
+          ('Петрова Анна Сергеевна', 'Кафедра баз данных'),
+          ('Сидоров Михаил Петрович', 'Кафедра экономики'),
+          ('Козлова Елена Владимировна', 'Кафедра менеджмента');
+          
+          -- Вставка студентов (упрощенная версия)
+          INSERT INTO students (full_name, group_id, enrollment_year) VALUES
+          ('Александров Александр Александрович', 1, 2021),
+          ('Алексеев Алексей Алексеевич', 1, 2021),
+          ('Андреев Андрей Андреевич', 1, 2021),
+          ('Антонов Антон Антонович', 1, 2021),
+          ('Артемьев Артем Артемович', 1, 2021),
+          ('Борисов Борис Борисович', 2, 2021),
+          ('Васильев Василий Васильевич', 2, 2021),
+          ('Владимиров Владимир Владимирович', 2, 2021),
+          ('Григорьев Григорий Григорьевич', 3, 2021),
+          ('Дмитриев Дмитрий Дмитриевич', 3, 2021),
+          ('Егоров Егор Егорович', 4, 2021),
+          ('Жуков Жук Жукович', 4, 2021);
+          
+          -- Вставка записей о преподавании
+          INSERT INTO teaching (lecturer_id, course_id, semester) VALUES
+          (1, 1, '2021-2022/1'),
+          (2, 2, '2021-2022/1'),
+          (3, 3, '2021-2022/1'),
+          (4, 4, '2021-2022/1');
+          
+          -- Вставка записей о зачислении на курсы
+          INSERT INTO enrollments (student_id, course_id, grade) VALUES
+          (1, 1, 5), (1, 2, 4), (2, 1, 4), (2, 2, 5), (3, 1, 3), (3, 2, 4),
+          (4, 1, 5), (4, 2, 3), (5, 1, 4), (5, 2, 5), (6, 1, 3), (6, 2, 4),
+          (7, 1, 5), (7, 2, 4), (8, 1, 4), (8, 2, 5), (9, 1, 3), (9, 2, 4),
+          (10, 1, 5), (10, 2, 3), (11, 1, 4), (11, 2, 5), (12, 1, 3), (12, 2, 4),
+          (9, 3, 5), (9, 4, 4), (10, 3, 4), (10, 4, 5), (11, 3, 3), (11, 4, 4),
+          (12, 3, 5), (12, 4, 3);
+          EOF
+            
+            # Выполнение вставки данных
+            docker exec -i university-postgres psql -U postgres -d university < /tmp/insert_data.sql
+            echo "Тестовые данные успешно добавлены!"
+          else
+            echo "База данных уже содержит данные, пропускаем вставку."
+          fi
+          
+          # Очистка временных файлов
+          rm -f /tmp/init_db.sql /tmp/insert_data.sql
+          
+          echo "Инициализация базы данных завершена!"
