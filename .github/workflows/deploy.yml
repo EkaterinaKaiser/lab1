@@ -37,6 +37,7 @@ jobs:
         port: ${{ secrets.SERVER_PORT }}
         timeout: 60s
         command_timeout: 15m
+        debug: false
         script: |
           # Остановка и удаление старых контейнеров
           docker stop university-postgres || true
@@ -72,6 +73,7 @@ jobs:
         port: ${{ secrets.SERVER_PORT }}
         timeout: 60s
         command_timeout: 15m
+        debug: false
         script: |
           # Подтягивание нового образа
           docker pull ${{ secrets.DOCKER_USERNAME }}/university-app:latest
@@ -99,8 +101,9 @@ jobs:
         username: ${{ secrets.SERVER_USERNAME }}
         key: ${{ secrets.SERVER_SSH_KEY }}
         port: ${{ secrets.SERVER_PORT }}
-        timeout: 60s
+        timeout: 120s
         command_timeout: 10m
+        debug: false
         script: |
           # Создание SQL файлов для инициализации
           cat > /tmp/init_db.sql << 'EOF'
