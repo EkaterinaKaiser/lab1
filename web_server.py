@@ -323,7 +323,13 @@ class QueryHandler(BaseHTTPRequestHandler):
             self.serve_queries_api()
         elif self.path.startswith('/api/query/'):
             query_id = self.path.split('/')[-1]
-            self.serve_query_result(query_id)
+            self.serve_query_editor(query_id)
+        else:
+            self.send_error(404)
+    
+    def do_POST(self):
+        if self.path == '/api/execute':
+            self.execute_custom_query()
         else:
             self.send_error(404)
 
@@ -425,7 +431,7 @@ class QueryHandler(BaseHTTPRequestHandler):
                         <div class="query-title">{i}. {query['title']}</div>
                         <div class="query-description">{query['description']}</div>
                         <div class="query-actions">
-                            <a href="/api/query/{i}" class="btn">Выполнить запрос</a>
+                            <a href="/api/query/{i}" class="btn">Редактировать и выполнить</a>
                         </div>
                     </div>
             """
@@ -460,8 +466,8 @@ class QueryHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(response, ensure_ascii=False, indent=2).encode('utf-8'))
 
-    def serve_query_result(self, query_id):
-        """Выполнение конкретного запроса и отображение результатов"""
+    def serve_query_editor(self, query_id):
+        """Отображение редактора SQL запроса"""
         try:
             query_index = int(query_id) - 1
             queries = get_queries()
@@ -472,25 +478,13 @@ class QueryHandler(BaseHTTPRequestHandler):
             
             query_info = queries[query_index]
             
-            # Подключение к базе данных
-            conn = connect_to_db()
-            if not conn:
-                self.send_error(500, "Ошибка подключения к базе данных")
-                return
-            
-            cursor = conn.cursor()
-            results, columns = execute_query(cursor, query_info['sql'], query_info['title'])
-            
-            # Генерация HTML с результатами
-            results_html = format_results(results, columns)
-            
             html_content = f"""
             <!DOCTYPE html>
             <html lang="ru">
             <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Результат запроса - {query_info['title']}</title>
+                <title>Редактор SQL - {query_info['title']}</title>
                 <style>
                     body {{
                         font-family: Arial, sans-serif;
@@ -532,16 +526,66 @@ class QueryHandler(BaseHTTPRequestHandler):
                         background-color: #e9ecef;
                         border-left: 4px solid #007bff;
                     }}
-                    .sql-code {{
-                        background-color: #f8f9fa;
-                        border: 1px solid #e9ecef;
-                        border-radius: 4px;
-                        padding: 15px;
-                        margin: 10px 0;
+                    .sql-editor {{
+                        margin: 20px 0;
+                    }}
+                    .sql-textarea {{
+                        width: 100%;
+                        height: 200px;
                         font-family: 'Courier New', monospace;
-                        font-size: 0.9em;
-                        overflow-x: auto;
-                        white-space: pre-wrap;
+                        font-size: 14px;
+                        padding: 15px;
+                        border: 1px solid #ddd;
+                        border-radius: 4px;
+                        resize: vertical;
+                        background-color: #f8f9fa;
+                    }}
+                    .button-group {{
+                        margin: 20px 0;
+                        text-align: center;
+                    }}
+                    .btn {{
+                        background-color: #007bff;
+                        color: white;
+                        padding: 12px 24px;
+                        border: none;
+                        border-radius: 4px;
+                        cursor: pointer;
+                        font-size: 16px;
+                        margin: 0 10px;
+                    }}
+                    .btn:hover {{
+                        background-color: #0056b3;
+                    }}
+                    .btn-secondary {{
+                        background-color: #6c757d;
+                    }}
+                    .btn-secondary:hover {{
+                        background-color: #545b62;
+                    }}
+                    .results-section {{
+                        margin-top: 30px;
+                        padding: 20px;
+                        border: 1px solid #ddd;
+                        border-radius: 5px;
+                        background-color: #f9f9f9;
+                        display: none;
+                    }}
+                    .error-message {{
+                        color: #dc3545;
+                        background-color: #f8d7da;
+                        border: 1px solid #f5c6cb;
+                        padding: 10px;
+                        border-radius: 4px;
+                        margin: 10px 0;
+                    }}
+                    .success-message {{
+                        color: #155724;
+                        background-color: #d4edda;
+                        border: 1px solid #c3e6cb;
+                        padding: 10px;
+                        border-radius: 4px;
+                        margin: 10px 0;
                     }}
                     table {{
                         width: 100%;
@@ -560,55 +604,86 @@ class QueryHandler(BaseHTTPRequestHandler):
                     tr:nth-child(even) {{
                         background-color: #f9f9f9;
                     }}
-                    .back-btn {{
-                        background-color: #6c757d;
-                        color: white;
-                        padding: 10px 20px;
-                        border: none;
-                        border-radius: 4px;
-                        cursor: pointer;
-                        text-decoration: none;
-                        display: inline-block;
-                        margin-bottom: 20px;
-                    }}
-                    .back-btn:hover {{
-                        background-color: #545b62;
-                    }}
-                    .timestamp {{
+                    .loading {{
                         text-align: center;
                         color: #666;
-                        font-size: 0.9em;
-                        margin-top: 30px;
-                        padding-top: 20px;
-                        border-top: 1px solid #ddd;
+                        font-style: italic;
                     }}
                 </style>
             </head>
             <body>
                 <div class="container">
-                    <a href="/" class="back-btn">← Назад к списку запросов</a>
-                    <h1>Результат SQL запроса</h1>
+                    <a href="/" class="btn btn-secondary">← Назад к списку запросов</a>
+                    <h1>Редактор SQL запроса</h1>
                     
                     <div class="query-section">
                         <div class="query-title">{query_info['title']}</div>
                         <div class="query-description">{query_info['description']}</div>
-                        <div class="sql-code">{query_info['sql'].strip()}</div>
-                        <div>
-                            <strong>Результаты ({len(results)} записей):</strong>
-                            {results_html}
+                        
+                        <div class="sql-editor">
+                            <label for="sql-query"><strong>SQL запрос:</strong></label>
+                            <textarea id="sql-query" class="sql-textarea" placeholder="Введите ваш SQL запрос здесь...">{query_info['sql'].strip()}</textarea>
                         </div>
+                        
+                        <div class="button-group">
+                            <button onclick="executeQuery()" class="btn">Выполнить запрос</button>
+                            <button onclick="resetQuery()" class="btn btn-secondary">Сбросить к исходному</button>
                     </div>
                     
-                    <div class="timestamp">
-                        Выполнено: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+                        <div id="results-section" class="results-section">
+                            <h3>Результаты запроса:</h3>
+                            <div id="results-content"></div>
+                        </div>
                     </div>
                 </div>
+                
+                <script>
+                    function executeQuery() {{
+                        const sqlQuery = document.getElementById('sql-query').value;
+                        const resultsSection = document.getElementById('results-section');
+                        const resultsContent = document.getElementById('results-content');
+                        
+                        if (!sqlQuery.trim()) {{
+                            alert('Пожалуйста, введите SQL запрос');
+                            return;
+                        }}
+                        
+                        // Показать загрузку
+                        resultsContent.innerHTML = '<div class="loading">Выполняется запрос...</div>';
+                        resultsSection.style.display = 'block';
+                        
+                        // Отправить запрос на сервер
+                        fetch('/api/execute', {{
+                            method: 'POST',
+                            headers: {{
+                                'Content-Type': 'application/json',
+                            }},
+                            body: JSON.stringify({{
+                                query: sqlQuery,
+                                query_id: '{query_id}'
+                            }})
+                        }})
+                        .then(response => response.json())
+                        .then(data => {{
+                            if (data.success) {{
+                                resultsContent.innerHTML = data.html;
+                            }} else {{
+                                resultsContent.innerHTML = '<div class="error-message">Ошибка: ' + data.error + '</div>';
+                            }}
+                        }})
+                        .catch(error => {{
+                            resultsContent.innerHTML = '<div class="error-message">Ошибка выполнения запроса: ' + error.message + '</div>';
+                        }});
+                    }}
+                    
+                    function resetQuery() {{
+                        document.getElementById('sql-query').value = `{query_info['sql'].strip()}`;
+                        document.getElementById('results-section').style.display = 'none';
+                    }}
+                </script>
             </body>
             </html>
             """
-            
-            cursor.close()
-            conn.close()
             
             self.send_response(200)
             self.send_header('Content-type', 'text/html; charset=utf-8')
@@ -616,7 +691,94 @@ class QueryHandler(BaseHTTPRequestHandler):
             self.wfile.write(html_content.encode('utf-8'))
             
         except Exception as e:
-            self.send_error(500, f"Ошибка выполнения запроса: {str(e)}")
+            self.send_error(500, f"Ошибка загрузки редактора: {str(e)}")
+    
+    def execute_custom_query(self):
+        """Выполнение пользовательского SQL запроса"""
+        try:
+            # Получение данных из POST запроса
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            sql_query = data.get('query', '')
+            query_id = data.get('query_id', '')
+            
+            if not sql_query.strip():
+                response = {
+                    "success": False,
+                    "error": "Пустой SQL запрос"
+                }
+            else:
+                # Подключение к базе данных
+                conn = connect_to_db()
+                if not conn:
+                    response = {
+                        "success": False,
+                        "error": "Ошибка подключения к базе данных"
+                    }
+                else:
+                    cursor = conn.cursor()
+                    results, columns = execute_query(cursor, sql_query, "Пользовательский запрос")
+                    
+                    # Генерация HTML с результатами
+                    results_html = format_results(results, columns)
+                    
+                    # Получение информации о запросе
+                    queries = get_queries()
+                    query_index = int(query_id) - 1
+                    query_info = queries[query_index] if 0 <= query_index < len(queries) else None
+                    
+                    html_content = f"""
+                    <div class="success-message">
+                        Запрос выполнен успешно! Найдено записей: {len(results)}
+                    </div>
+                    <div>
+                        <strong>Выполненный запрос:</strong>
+                        <div class="sql-code" style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 4px; padding: 15px; margin: 10px 0; font-family: 'Courier New', monospace; font-size: 0.9em; overflow-x: auto; white-space: pre-wrap;">{sql_query.strip()}</div>
+                    </div>
+                    <div>
+                        <strong>Результаты:</strong>
+                        {results_html}
+                    </div>
+                    <div style="text-align: center; color: #666; font-size: 0.9em; margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd;">
+                        Выполнено: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+                    </div>
+                    """
+                    
+                    response = {
+                        "success": True,
+                        "html": html_content
+                    }
+                    
+                    cursor.close()
+                    conn.close()
+            
+            # Отправка ответа
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
+            
+        except json.JSONDecodeError:
+            response = {
+                "success": False,
+                "error": "Ошибка парсинга JSON данных"
+            }
+            self.send_response(400)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
+            
+        except Exception as e:
+            response = {
+                "success": False,
+                "error": f"Ошибка выполнения запроса: {str(e)}"
+            }
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
 
 def run_server(port=8080):
     """Запуск веб-сервера"""
