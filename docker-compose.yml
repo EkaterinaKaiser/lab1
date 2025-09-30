@@ -3,40 +3,28 @@ version: '3.8'
 services:
   postgres:
     image: postgres:15
-    container_name: university_db
     environment:
       POSTGRES_DB: university
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "192.168.0.111:5432:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d
-    restart: unless-stopped
-    networks:
-      - university_network
 
-  web:
+  app:
     build: .
-    container_name: university_web
     ports:
-      - "192.168.0.111:8080:8080"
+      - "8080:8080"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: university
+      DB_USER: postgres
+      DB_PASSWORD: postgres
     depends_on:
       - postgres
-    environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=university
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-    restart: unless-stopped
-    networks:
-      - university_network
-
-networks:
-  university_network:
-    driver: bridge
 
 volumes:
   postgres_data:
