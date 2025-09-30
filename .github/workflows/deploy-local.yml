@@ -45,6 +45,10 @@ jobs:
         echo "Removing old application images..."
         docker rmi university-app:latest || true
         
+        # Удаление старого тома с данными БД
+        echo "Removing old database volume..."
+        docker volume rm university_postgres_data || true
+        
         # Очистка неиспользуемых образов и контейнеров
         echo "Cleaning up unused Docker resources..."
         docker system prune -f
@@ -110,17 +114,10 @@ jobs:
         echo "Создание таблиц..."
         docker exec -i university-postgres psql -U postgres -d university < init/01_create_tables.sql
         
-        # Проверка, есть ли уже данные
-        DATA_EXISTS=$(docker exec university-postgres psql -U postgres -d university -t -c "SELECT COUNT(*) FROM students;" 2>/dev/null | tr -d ' ')
-        
-        if [ "$DATA_EXISTS" = "0" ] || [ -z "$DATA_EXISTS" ]; then
-          echo "Заполнение базы данных тестовыми данными..."
-          # Выполнение вставки данных из готового файла
-          docker exec -i university-postgres psql -U postgres -d university < init/02_insert_test_data.sql
-          echo "Тестовые данные успешно добавлены!"
-        else
-          echo "База данных уже содержит данные, пропускаем вставку."
-        fi
+        # Заполнение базы данных тестовыми данными
+        echo "Заполнение базы данных тестовыми данными..."
+        docker exec -i university-postgres psql -U postgres -d university < init/02_insert_test_data.sql
+        echo "Тестовые данные успешно добавлены!"
         
         echo "Инициализация базы данных завершена!"
         
