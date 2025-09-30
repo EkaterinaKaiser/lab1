@@ -41,12 +41,16 @@ jobs:
         port: ${{ secrets.SERVER_PORT }}
         timeout: 60s
         command_timeout: 2m
+        debug: true
+        use_insecure_cipher: true
+        cipher: "aes128-ctr"
         script: |
           echo "🔍 Тестируем подключение к серверу..."
           echo "Сервер: $(hostname)"
           echo "Пользователь: $(whoami)"
           echo "Время: $(date)"
           echo "IP адрес: $(hostname -I)"
+          echo "SSH версия: $(ssh -V 2>&1)"
           echo "✅ Подключение успешно!"
         
     - name: Deploy to server
