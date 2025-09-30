@@ -47,31 +47,10 @@ jobs:
           pwd
           uname -a
           
-          # Проверка установки Docker
-          if ! command -v docker &> /dev/null; then
-            echo "❌ Docker не установлен, устанавливаем..."
-            curl -fsSL https://get.docker.com -o get-docker.sh
-            sh get-docker.sh
-            systemctl enable docker
-            systemctl start docker
-          else
-            echo "✅ Docker уже установлен"
-          fi
-          
-          # Проверка установки Docker Compose
-          if ! docker compose version &> /dev/null; then
-            echo "❌ Docker Compose не установлен, устанавливаем..."
-            curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            chmod +x /usr/local/bin/docker-compose
-            # Создаем симлинк для нового синтаксиса
-            ln -sf /usr/local/bin/docker-compose /usr/local/bin/docker-compose
-          else
-            echo "✅ Docker Compose уже установлен"
-          fi
-          
           # Создание директории приложения
           echo "📁 Создаем директорию приложения..."
-          mkdir -p /opt/university-app
+          sudo mkdir -p /opt/university-app
+          sudo chown vboxuser:vboxuser /opt/university-app
           cd /opt/university-app
           
           # Создание docker-compose.prod.yml
