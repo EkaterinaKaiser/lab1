@@ -28,6 +28,29 @@ jobs:
         push: true
         tags: ${{ secrets.DOCKER_USERNAME }}/university-app:latest
         
+    - name: Test network connectivity
+      run: |
+        echo "=== Network Connectivity Test ==="
+        echo "Testing basic connectivity to server..."
+        ping -c 3 ${{ secrets.SERVER_HOST }} || echo "Ping failed"
+        echo "Testing port connectivity..."
+        nc -zv ${{ secrets.SERVER_HOST }} ${{ secrets.SERVER_PORT }} || echo "Port test failed"
+        echo "=== Network Test Completed ==="
+        
+    - name: Validate SSH key
+      run: |
+        echo "=== SSH Key Validation ==="
+        echo "Checking if SSH key is properly formatted..."
+        if [ -n "${{ secrets.SERVER_SSH_KEY }}" ]; then
+          echo "SSH key is present (length: ${#{{ secrets.SERVER_SSH_KEY }}})"
+          echo "First 50 characters: ${ {{ secrets.SERVER_SSH_KEY }}:0:50 }..."
+          echo "Last 50 characters: ...${ {{ secrets.SERVER_SSH_KEY }}: -50}"
+        else
+          echo "ERROR: SSH key is empty!"
+          exit 1
+        fi
+        echo "=== SSH Key Validation Completed ==="
+        
     - name: Test SSH connection
       uses: appleboy/ssh-action@v1.0.3
       with:
@@ -35,9 +58,11 @@ jobs:
         username: ${{ secrets.SERVER_USERNAME }}
         key: ${{ secrets.SERVER_SSH_KEY }}
         port: ${{ secrets.SERVER_PORT }}
-        timeout: 120s
-        command_timeout: 2m
+        timeout: 300s
+        command_timeout: 5m
         debug: true
+        use_insecure_cipher: false
+        cipher: aes128-ctr
         script: |
           echo "=== SSH Connection Test ==="
           echo "Host: ${{ secrets.SERVER_HOST }}"
@@ -54,6 +79,26 @@ jobs:
           echo "Running containers:"
           docker ps -a
           echo "=== SSH Connection Test Completed Successfully ==="
+        
+    - name: Alternative SSH test (if first fails)
+      if: failure()
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USERNAME }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        port: ${{ secrets.SERVER_PORT }}
+        timeout: 300s
+        command_timeout: 5m
+        debug: true
+        use_insecure_cipher: true
+        cipher: aes128-cbc
+        script: |
+          echo "=== Alternative SSH Connection Test ==="
+          echo "This is a fallback test with different cipher settings"
+          echo "Date: $(date)"
+          echo "Uptime: $(uptime)"
+          echo "=== Alternative SSH Test Completed ==="
         
     - name: Check server status
       uses: appleboy/ssh-action@v1.0.3
