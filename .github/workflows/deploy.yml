@@ -32,6 +32,21 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
         
+    - name: Test server connection
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USERNAME }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        port: ${{ secrets.SERVER_PORT }}
+        timeout: 30s
+        script: |
+          echo "🔍 Тестируем подключение к серверу..."
+          echo "Сервер: $(hostname)"
+          echo "Пользователь: $(whoami)"
+          echo "Время: $(date)"
+          echo "✅ Подключение успешно!"
+        
     - name: Deploy to server
       uses: appleboy/ssh-action@v1.0.3
       with:
@@ -39,8 +54,39 @@ jobs:
         username: ${{ secrets.SERVER_USERNAME }}
         key: ${{ secrets.SERVER_SSH_KEY }}
         port: ${{ secrets.SERVER_PORT }}
+        timeout: 60s
+        command_timeout: 10m
         script: |
+          # Проверка подключения и системных требований
+          echo "🔍 Проверяем подключение к серверу..."
+          whoami
+          pwd
+          uname -a
+          
+          # Проверка установки Docker
+          if ! command -v docker &> /dev/null; then
+            echo "❌ Docker не установлен, устанавливаем..."
+            curl -fsSL https://get.docker.com -o get-docker.sh
+            sh get-docker.sh
+            systemctl enable docker
+            systemctl start docker
+          else
+            echo "✅ Docker уже установлен"
+          fi
+          
+          # Проверка установки Docker Compose
+          if ! docker compose version &> /dev/null; then
+            echo "❌ Docker Compose не установлен, устанавливаем..."
+            curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            chmod +x /usr/local/bin/docker-compose
+            # Создаем симлинк для нового синтаксиса
+            ln -sf /usr/local/bin/docker-compose /usr/local/bin/docker-compose
+          else
+            echo "✅ Docker Compose уже установлен"
+          fi
+          
           # Создание директории приложения
+          echo "📁 Создаем директорию приложения..."
           mkdir -p /opt/university-app
           cd /opt/university-app
           
@@ -196,16 +242,28 @@ jobs:
           EOF
           
           # Остановка существующих контейнеров
-          docker-compose -f docker-compose.prod.yml down || true
+          echo "🛑 Останавливаем существующие контейнеры..."
+          docker compose -f docker-compose.prod.yml down || echo "⚠️ Контейнеры не были запущены"
           
           # Обновление образов
-          docker pull ${{ secrets.DOCKER_USERNAME }}/university-web:latest
+          echo "📥 Скачиваем обновленный образ..."
+          if ! docker pull ${{ secrets.DOCKER_USERNAME }}/university-web:latest; then
+            echo "❌ Ошибка при скачивании образа"
+            exit 1
+          fi
           
           # Запуск обновленных контейнеров
-          docker-compose -f docker-compose.prod.yml up -d
+          echo "🚀 Запускаем контейнеры..."
+          if ! docker compose -f docker-compose.prod.yml up -d; then
+            echo "❌ Ошибка при запуске контейнеров"
+            echo "📋 Логи:"
+            docker compose -f docker-compose.prod.yml logs
+            exit 1
+          fi
           
           # Очистка старых образов
-          docker image prune -f
+          echo "🧹 Очищаем старые образы..."
+          docker image prune -f || echo "⚠️ Ошибка при очистке образов"
           
     - name: Health check
       uses: appleboy/ssh-action@v1.0.3
@@ -220,13 +278,13 @@ jobs:
           
           # Проверка статуса контейнеров
           cd /opt/university-app
-          docker-compose -f docker-compose.prod.yml ps
+          docker compose -f docker-compose.prod.yml ps
           
           # Проверка доступности веб-приложения
           curl -f http://localhost:8080 || {
             echo "Web application is not responding"
             echo "Checking logs..."
-            docker-compose -f docker-compose.prod.yml logs web
+            docker compose -f docker-compose.prod.yml logs web
             exit 1
           }
           
