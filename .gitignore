@@ -1,0 +1,33 @@
+# SSH ключи и секреты
+*.pem
+*.key
+*_key
+*_key.pub
+test_key
+public_key.pub
+
+# Временные файлы
+*.tmp
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
