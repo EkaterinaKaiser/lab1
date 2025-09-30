@@ -16,7 +16,7 @@ LIMIT 20;
 -- 2. Все курсы и количество студентов, записанных на каждый из них
 SELECT 
     c.course_name as "Название курса",
-    c.credits as "Кредиты",
+    c.credits as "Количество курсов",
     COUNT(e.student_id) as "Количество студентов"
 FROM courses c
 LEFT JOIN enrollments e ON c.id = e.course_id
@@ -100,7 +100,7 @@ ORDER BY "Название курса", "Оценка", "ФИО студента
 SELECT 
     c.id,
     c.course_name as "Название курса",
-    c.credits as "Кредиты"
+    c.credits as "Количество"
 FROM courses c
 LEFT JOIN enrollments e ON c.id = e.course_id
 WHERE e.course_id IS NULL
@@ -116,11 +116,11 @@ JOIN groups g ON s.group_id = g.id
 GROUP BY s.enrollment_year, g.id, g.group_name
 ORDER BY s.enrollment_year, g.group_name;
 
--- 11. Курсы с указанием суммарного количества кредитов по факультетам
+-- 11. Курсы с указанием суммарного количества курсов по факультетам
 SELECT 
     f.faculty_name as "Факультет",
     COUNT(DISTINCT c.id) as "Количество курсов",
-    SUM(c.credits) as "Суммарные кредиты"
+    SUM(c.credits) as "Сумма"
 FROM faculties f
 JOIN groups g ON f.id = g.faculty_id
 JOIN students s ON g.id = s.group_id
