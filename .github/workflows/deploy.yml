@@ -1,0 +1,234 @@
+name: Deploy University Database Web App
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+        
+    - name: Build and push Docker images
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{ secrets.DOCKER_USERNAME }}/university-web:latest
+          ${{ secrets.DOCKER_USERNAME }}/university-web:${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Deploy to server
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USERNAME }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        port: ${{ secrets.SERVER_PORT }}
+        script: |
+          # Создание директории приложения
+          mkdir -p /opt/university-app
+          cd /opt/university-app
+          
+          # Создание docker-compose.prod.yml
+          cat > docker-compose.prod.yml << 'EOF'
+          version: '3.8'
+          
+          services:
+            postgres:
+              image: postgres:15
+              container_name: university_db
+              environment:
+                POSTGRES_DB: university
+                POSTGRES_USER: postgres
+                POSTGRES_PASSWORD: postgres
+              ports:
+                - "${{ secrets.SERVER_HOST }}:5432:5432"
+              volumes:
+                - postgres_data:/var/lib/postgresql/data
+                - ./init:/docker-entrypoint-initdb.d
+              restart: unless-stopped
+              networks:
+                - university_network
+          
+            web:
+              image: ${{ secrets.DOCKER_USERNAME }}/university-web:latest
+              container_name: university_web
+              ports:
+                - "${{ secrets.SERVER_HOST }}:8080:8080"
+              depends_on:
+                - postgres
+              environment:
+                - DB_HOST=postgres
+                - DB_PORT=5432
+                - DB_NAME=university
+                - DB_USER=postgres
+                - DB_PASSWORD=postgres
+              restart: unless-stopped
+              networks:
+                - university_network
+          
+          networks:
+            university_network:
+              driver: bridge
+          
+          volumes:
+            postgres_data:
+          EOF
+          
+          # Создание директории init с SQL скриптами
+          mkdir -p init
+          cat > init/01_create_tables.sql << 'EOF'
+          -- Создание таблиц университетской базы данных
+          CREATE TABLE IF NOT EXISTS faculties (
+              id SERIAL PRIMARY KEY,
+              faculty_name VARCHAR(100) NOT NULL UNIQUE
+          );
+          
+          CREATE TABLE IF NOT EXISTS groups (
+              id SERIAL PRIMARY KEY,
+              group_name VARCHAR(20) NOT NULL UNIQUE,
+              faculty_id INTEGER REFERENCES faculties(id)
+          );
+          
+          CREATE TABLE IF NOT EXISTS students (
+              id SERIAL PRIMARY KEY,
+              full_name VARCHAR(100) NOT NULL,
+              group_id INTEGER REFERENCES groups(id),
+              enrollment_year INTEGER
+          );
+          
+          CREATE TABLE IF NOT EXISTS courses (
+              id SERIAL PRIMARY KEY,
+              course_name VARCHAR(100) NOT NULL,
+              credits INTEGER
+          );
+          
+          CREATE TABLE IF NOT EXISTS lecturers (
+              id SERIAL PRIMARY KEY,
+              full_name VARCHAR(100) NOT NULL,
+              department VARCHAR(100)
+          );
+          
+          CREATE TABLE IF NOT EXISTS enrollments (
+              id SERIAL PRIMARY KEY,
+              student_id INTEGER REFERENCES students(id),
+              course_id INTEGER REFERENCES courses(id),
+              grade DECIMAL(3,1)
+          );
+          
+          CREATE TABLE IF NOT EXISTS teaching (
+              id SERIAL PRIMARY KEY,
+              lecturer_id INTEGER REFERENCES lecturers(id),
+              course_id INTEGER REFERENCES courses(id)
+          );
+          EOF
+          
+          cat > init/02_insert_test_data.sql << 'EOF'
+          -- Вставка тестовых данных
+          INSERT INTO faculties (faculty_name) VALUES 
+          ('Факультет информационных технологий'),
+          ('Факультет математики и физики');
+          
+          INSERT INTO groups (group_name, faculty_id) VALUES 
+          ('ИТ-21-1', 1), ('ИТ-21-2', 1),
+          ('МФ-21-1', 2), ('МФ-21-2', 2);
+          
+          INSERT INTO courses (course_name, credits) VALUES 
+          ('Базы данных', 4), ('Программирование', 5),
+          ('Математический анализ', 6), ('Физика', 4);
+          
+          INSERT INTO lecturers (full_name, department) VALUES 
+          ('Иванов И.И.', 'Кафедра БД'),
+          ('Петров П.П.', 'Кафедра программирования'),
+          ('Сидоров С.С.', 'Кафедра математики'),
+          ('Козлов К.К.', 'Кафедра физики');
+          
+          -- Генерация тестовых студентов
+          INSERT INTO students (full_name, group_id, enrollment_year) 
+          SELECT 
+              'Студент ' || generate_series(1, 25) || ' ИТ',
+              CASE 
+                  WHEN generate_series(1, 25) <= 12 THEN 1 
+                  ELSE 2 
+              END,
+              2021
+          FROM generate_series(1, 25);
+          
+          INSERT INTO students (full_name, group_id, enrollment_year) 
+          SELECT 
+              'Студент ' || generate_series(26, 50) || ' МФ',
+              CASE 
+                  WHEN generate_series(26, 50) <= 37 THEN 3 
+                  ELSE 4 
+              END,
+              2021
+          FROM generate_series(26, 50);
+          
+          -- Генерация записей о зачислении
+          INSERT INTO enrollments (student_id, course_id, grade)
+          SELECT 
+              s.id,
+              c.id,
+              (random() * 3 + 2)::DECIMAL(3,1)
+          FROM students s
+          CROSS JOIN courses c
+          WHERE random() < 0.8;
+          
+          -- Генерация записей о преподавании
+          INSERT INTO teaching (lecturer_id, course_id) VALUES 
+          (1, 1), (2, 2), (3, 3), (4, 4),
+          (1, 2), (2, 1), (3, 4), (4, 3);
+          EOF
+          
+          # Остановка существующих контейнеров
+          docker-compose -f docker-compose.prod.yml down || true
+          
+          # Обновление образов
+          docker pull ${{ secrets.DOCKER_USERNAME }}/university-web:latest
+          
+          # Запуск обновленных контейнеров
+          docker-compose -f docker-compose.prod.yml up -d
+          
+          # Очистка старых образов
+          docker image prune -f
+          
+    - name: Health check
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USERNAME }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        port: ${{ secrets.SERVER_PORT }}
+        script: |
+          # Ожидание запуска сервисов
+          sleep 15
+          
+          # Проверка статуса контейнеров
+          cd /opt/university-app
+          docker-compose -f docker-compose.prod.yml ps
+          
+          # Проверка доступности веб-приложения
+          curl -f http://localhost:8080 || {
+            echo "Web application is not responding"
+            echo "Checking logs..."
+            docker-compose -f docker-compose.prod.yml logs web
+            exit 1
+          }
+          
+          echo "✅ Deployment successful!"
+          echo "🌐 Web application is available at: http://${{ secrets.SERVER_HOST }}:8080"

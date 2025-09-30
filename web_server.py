@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
 import psycopg2
-import sys
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import json
 from datetime import datetime
 
-# Параметры подключения к базе данных
+# Параметры подключения к базе данных из переменных окружения
 DB_CONFIG = {
-    'host': '192.168.0.111',
-    'port': 5432,
-    'database': 'university',
-    'user': 'postgres',
-    'password': 'postgres'
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'port': int(os.getenv('DB_PORT', 5432)),
+    'database': os.getenv('DB_NAME', 'university'),
+    'user': os.getenv('DB_USER', 'postgres'),
+    'password': os.getenv('DB_PASSWORD', 'postgres')
 }
 
 def connect_to_db():
@@ -21,7 +23,7 @@ def connect_to_db():
         return conn
     except psycopg2.Error as e:
         print(f"Ошибка подключения к базе данных: {e}")
-        sys.exit(1)
+        return None
 
 def execute_query(cursor, query, description):
     """Выполнение запроса и возврат результатов"""
@@ -54,11 +56,9 @@ def format_results(results, columns):
     html += "</table>"
     return html
 
-def generate_html():
-    """Генерация HTML страницы с результатами запросов"""
-    
-    # Определение всех запросов
-    queries = [
+def get_queries():
+    """Получение списка всех запросов"""
+    return [
         {
             "title": "Список студентов с указанием их учебных групп и факультетов",
             "description": "Запрос объединяет таблицы students, groups и faculties для отображения полной информации о студентах",
@@ -314,142 +314,318 @@ def generate_html():
             """
         }
     ]
-    
-    # Подключение к базе данных
-    conn = connect_to_db()
-    cursor = conn.cursor()
-    
-    # Генерация HTML
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Результаты SQL запросов - Университетская база данных</title>
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                margin: 20px;
-                background-color: #f5f5f5;
-            }}
-            .container {{
-                max-width: 1200px;
-                margin: 0 auto;
-                background-color: white;
-                padding: 20px;
-                border-radius: 8px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            }}
-            h1 {{
-                color: #333;
-                text-align: center;
-                border-bottom: 3px solid #007bff;
-                padding-bottom: 10px;
-            }}
-            .query-section {{
-                margin: 30px 0;
-                padding: 20px;
-                border: 1px solid #ddd;
-                border-radius: 5px;
-                background-color: #fafafa;
-            }}
-            .query-title {{
-                color: #007bff;
-                font-size: 1.3em;
-                font-weight: bold;
-                margin-bottom: 10px;
-            }}
-            .query-description {{
-                color: #666;
-                font-style: italic;
-                margin-bottom: 15px;
-                padding: 10px;
-                background-color: #e9ecef;
-                border-left: 4px solid #007bff;
-            }}
-            .sql-code {{
-                background-color: #f8f9fa;
-                border: 1px solid #e9ecef;
-                border-radius: 4px;
-                padding: 15px;
-                margin: 10px 0;
-                font-family: 'Courier New', monospace;
-                font-size: 0.9em;
-                overflow-x: auto;
-                white-space: pre-wrap;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 15px;
-            }}
-            th, td {{
-                padding: 8px;
-                text-align: left;
-                border: 1px solid #ddd;
-            }}
-            th {{
-                background-color: #f2f2f2;
-                font-weight: bold;
-            }}
-            tr:nth-child(even) {{
-                background-color: #f9f9f9;
-            }}
-            .timestamp {{
-                text-align: center;
-                color: #666;
-                font-size: 0.9em;
-                margin-top: 30px;
-                padding-top: 20px;
-                border-top: 1px solid #ddd;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>Результаты SQL запросов</h1>
-            <p style="text-align: center; color: #666;">Университетская база данных PostgreSQL</p>
-    """
-    
-    # Выполнение каждого запроса
-    for i, query_info in enumerate(queries, 1):
-        print(f"Выполнение запроса {i}/{len(queries)}: {query_info['title']}")
+
+class QueryHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/':
+            self.serve_main_page()
+        elif self.path == '/api/queries':
+            self.serve_queries_api()
+        elif self.path.startswith('/api/query/'):
+            query_id = self.path.split('/')[-1]
+            self.serve_query_result(query_id)
+        else:
+            self.send_error(404)
+
+    def serve_main_page(self):
+        """Отображение главной страницы со списком запросов"""
+        queries = get_queries()
         
-        results, columns = execute_query(cursor, query_info['sql'], query_info['title'])
-        results_html = format_results(results, columns)
+        html_content = f"""
+        <!DOCTYPE html>
+        <html lang="ru">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>SQL Запросы - Университетская база данных</title>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    margin: 20px;
+                    background-color: #f5f5f5;
+                }}
+                .container {{
+                    max-width: 1200px;
+                    margin: 0 auto;
+                    background-color: white;
+                    padding: 20px;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }}
+                h1 {{
+                    color: #333;
+                    text-align: center;
+                    border-bottom: 3px solid #007bff;
+                    padding-bottom: 10px;
+                }}
+                .query-list {{
+                    margin: 20px 0;
+                }}
+                .query-item {{
+                    margin: 15px 0;
+                    padding: 15px;
+                    border: 1px solid #ddd;
+                    border-radius: 5px;
+                    background-color: #fafafa;
+                    cursor: pointer;
+                    transition: background-color 0.3s;
+                }}
+                .query-item:hover {{
+                    background-color: #e9ecef;
+                }}
+                .query-title {{
+                    color: #007bff;
+                    font-size: 1.2em;
+                    font-weight: bold;
+                    margin-bottom: 8px;
+                }}
+                .query-description {{
+                    color: #666;
+                    font-style: italic;
+                    margin-bottom: 10px;
+                }}
+                .query-actions {{
+                    margin-top: 10px;
+                }}
+                .btn {{
+                    background-color: #007bff;
+                    color: white;
+                    padding: 8px 16px;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    text-decoration: none;
+                    display: inline-block;
+                    margin-right: 10px;
+                }}
+                .btn:hover {{
+                    background-color: #0056b3;
+                }}
+                .timestamp {{
+                    text-align: center;
+                    color: #666;
+                    font-size: 0.9em;
+                    margin-top: 30px;
+                    padding-top: 20px;
+                    border-top: 1px solid #ddd;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>SQL Запросы к Университетской базе данных</h1>
+                <p style="text-align: center; color: #666;">Выберите запрос для выполнения и просмотра результатов</p>
+                
+                <div class="query-list">
+        """
+        
+        for i, query in enumerate(queries, 1):
+            html_content += f"""
+                    <div class="query-item">
+                        <div class="query-title">{i}. {query['title']}</div>
+                        <div class="query-description">{query['description']}</div>
+                        <div class="query-actions">
+                            <a href="/api/query/{i}" class="btn">Выполнить запрос</a>
+                        </div>
+                    </div>
+            """
         
         html_content += f"""
-            <div class="query-section">
-                <div class="query-title">{i}. {query_info['title']}</div>
-                <div class="query-description">{query_info['description']}</div>
-                <div class="sql-code">{query_info['sql'].strip()}</div>
-                <div>
-                    <strong>Результаты ({len(results)} записей):</strong>
-                    {results_html}
+                </div>
+                
+                <div class="timestamp">
+                    Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
                 </div>
             </div>
+        </body>
+        </html>
         """
-    
-    html_content += f"""
-            <div class="timestamp">
-                Сгенерировано: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    
-    # Сохранение HTML файла
-    with open('query_results.html', 'w', encoding='utf-8') as f:
-        f.write(html_content)
-    
-    # Закрытие соединения
-    cursor.close()
-    conn.close()
-    
-    print(f"\nHTML файл 'query_results.html' успешно создан!")
-    print(f"Выполнено {len(queries)} запросов.")
+        
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(html_content.encode('utf-8'))
+
+    def serve_queries_api(self):
+        """API для получения списка запросов"""
+        queries = get_queries()
+        response = {
+            "queries": queries,
+            "count": len(queries),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(json.dumps(response, ensure_ascii=False, indent=2).encode('utf-8'))
+
+    def serve_query_result(self, query_id):
+        """Выполнение конкретного запроса и отображение результатов"""
+        try:
+            query_index = int(query_id) - 1
+            queries = get_queries()
+            
+            if query_index < 0 or query_index >= len(queries):
+                self.send_error(404, "Запрос не найден")
+                return
+            
+            query_info = queries[query_index]
+            
+            # Подключение к базе данных
+            conn = connect_to_db()
+            if not conn:
+                self.send_error(500, "Ошибка подключения к базе данных")
+                return
+            
+            cursor = conn.cursor()
+            results, columns = execute_query(cursor, query_info['sql'], query_info['title'])
+            
+            # Генерация HTML с результатами
+            results_html = format_results(results, columns)
+            
+            html_content = f"""
+            <!DOCTYPE html>
+            <html lang="ru">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Результат запроса - {query_info['title']}</title>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        margin: 20px;
+                        background-color: #f5f5f5;
+                    }}
+                    .container {{
+                        max-width: 1200px;
+                        margin: 0 auto;
+                        background-color: white;
+                        padding: 20px;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    }}
+                    h1 {{
+                        color: #333;
+                        text-align: center;
+                        border-bottom: 3px solid #007bff;
+                        padding-bottom: 10px;
+                    }}
+                    .query-section {{
+                        margin: 30px 0;
+                        padding: 20px;
+                        border: 1px solid #ddd;
+                        border-radius: 5px;
+                        background-color: #fafafa;
+                    }}
+                    .query-title {{
+                        color: #007bff;
+                        font-size: 1.3em;
+                        font-weight: bold;
+                        margin-bottom: 10px;
+                    }}
+                    .query-description {{
+                        color: #666;
+                        font-style: italic;
+                        margin-bottom: 15px;
+                        padding: 10px;
+                        background-color: #e9ecef;
+                        border-left: 4px solid #007bff;
+                    }}
+                    .sql-code {{
+                        background-color: #f8f9fa;
+                        border: 1px solid #e9ecef;
+                        border-radius: 4px;
+                        padding: 15px;
+                        margin: 10px 0;
+                        font-family: 'Courier New', monospace;
+                        font-size: 0.9em;
+                        overflow-x: auto;
+                        white-space: pre-wrap;
+                    }}
+                    table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin-top: 15px;
+                    }}
+                    th, td {{
+                        padding: 8px;
+                        text-align: left;
+                        border: 1px solid #ddd;
+                    }}
+                    th {{
+                        background-color: #f2f2f2;
+                        font-weight: bold;
+                    }}
+                    tr:nth-child(even) {{
+                        background-color: #f9f9f9;
+                    }}
+                    .back-btn {{
+                        background-color: #6c757d;
+                        color: white;
+                        padding: 10px 20px;
+                        border: none;
+                        border-radius: 4px;
+                        cursor: pointer;
+                        text-decoration: none;
+                        display: inline-block;
+                        margin-bottom: 20px;
+                    }}
+                    .back-btn:hover {{
+                        background-color: #545b62;
+                    }}
+                    .timestamp {{
+                        text-align: center;
+                        color: #666;
+                        font-size: 0.9em;
+                        margin-top: 30px;
+                        padding-top: 20px;
+                        border-top: 1px solid #ddd;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <a href="/" class="back-btn">← Назад к списку запросов</a>
+                    <h1>Результат SQL запроса</h1>
+                    
+                    <div class="query-section">
+                        <div class="query-title">{query_info['title']}</div>
+                        <div class="query-description">{query_info['description']}</div>
+                        <div class="sql-code">{query_info['sql'].strip()}</div>
+                        <div>
+                            <strong>Результаты ({len(results)} записей):</strong>
+                            {results_html}
+                        </div>
+                    </div>
+                    
+                    <div class="timestamp">
+                        Выполнено: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            cursor.close()
+            conn.close()
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html_content.encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, f"Ошибка выполнения запроса: {str(e)}")
+
+def run_server(port=8080):
+    """Запуск веб-сервера"""
+    server_address = ('', port)
+    httpd = HTTPServer(server_address, QueryHandler)
+    print(f"Веб-сервер запущен на порту {port}")
+    print(f"Откройте http://192.168.0.111:{port} в браузере")
+    httpd.serve_forever()
 
 if __name__ == "__main__":
-    generate_html()
+    run_server()
+
