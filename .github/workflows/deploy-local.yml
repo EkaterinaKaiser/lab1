@@ -212,12 +212,21 @@ jobs:
         # Проверка запуска приложения
         echo "Проверка запуска приложения..."
         sleep 5
+        
+        echo "=== Статус всех контейнеров ==="
+        docker ps -a
+        echo "=== Конец статуса контейнеров ==="
+        
         if docker ps | grep university-app > /dev/null; then
           echo "✅ Контейнер приложения запущен"
         else
           echo "❌ Контейнер приложения не запущен"
           echo "Логи приложения:"
           docker logs university-app --tail 20
+          echo "Логи PostgreSQL:"
+          docker logs university-postgres --tail 10
+          echo "Логи MongoDB:"
+          docker logs university-mongodb --tail 10
         fi
         
     - name: Initialize database with data
@@ -269,15 +278,15 @@ jobs:
         # Диагностика сетевых настроек
         echo "=== Сетевая диагностика ==="
         echo "Проверка портов:"
-        netstat -tlnp | grep :8080 || echo "Порт 8080 не слушается"
+        ss -tlnp | grep :8080 || echo "Порт 8080 не слушается"
         echo "Проверка Docker портов:"
         docker port university-app || echo "Контейнер не пробросил порты"
         echo "IP адрес машины:"
         hostname -I
         echo "Проверка firewall (ufw):"
-        ufw status || echo "ufw не установлен"
+        ufw status 2>/dev/null || echo "ufw не установлен или не активен"
         echo "Попытка открыть порт 8080 в firewall:"
-        ufw allow 8080 || echo "Не удалось открыть порт в firewall"
+        ufw allow 8080 2>/dev/null || echo "Не удалось открыть порт в firewall (возможно, уже открыт)"
         echo "=== Конец сетевой диагностики ==="
         
         if curl -f http://localhost:8080/ > /dev/null 2>&1; then
