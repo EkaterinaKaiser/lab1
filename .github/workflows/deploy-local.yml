@@ -94,6 +94,15 @@ jobs:
         
         # Запуск MongoDB
         echo "Starting MongoDB container..."
+        echo "=== Параметры запуска MongoDB ==="
+        echo "Имя контейнера: university-mongodb"
+        echo "Порт: 27017"
+        echo "Пользователь: admin"
+        echo "База данных: shop"
+        echo "Том данных: university_mongodb_data"
+        echo "Скрипты инициализации: $(pwd)/mongodb/init"
+        echo "=== Запуск контейнера ==="
+        
         docker run -d --name university-mongodb \
           -e MONGO_INITDB_ROOT_USERNAME=admin \
           -e MONGO_INITDB_ROOT_PASSWORD=admin123 \
@@ -102,6 +111,8 @@ jobs:
           -v university_mongodb_data:/data/db \
           -v $(pwd)/mongodb/init:/docker-entrypoint-initdb.d \
           mongo:7
+        
+        echo "Контейнер MongoDB запущен с ID: $(docker ps -q --filter name=university-mongodb)"
         
         # Ожидание готовности MongoDB
         echo "Ожидание готовности MongoDB..."
@@ -117,16 +128,56 @@ jobs:
         
         # Проверка готовности MongoDB
         echo "Проверка готовности MongoDB..."
+        mongodb_ready=false
+        
         for i in {1..30}; do
-          if docker exec university-mongodb mongosh --eval "print('MongoDB is ready')" > /dev/null 2>&1; then
-            echo "MongoDB готов к работе!"
+          echo "Попытка $i/30: Проверка подключения к MongoDB..."
+          
+          # Пробуем разные способы проверки
+          echo "Способ 1: Простая команда mongosh"
+          if docker exec university-mongodb mongosh --eval "print('MongoDB is ready')" 2>&1; then
+            echo "✅ MongoDB готов к работе (способ 1)!"
+            mongodb_ready=true
             break
           fi
+          
+          echo "Способ 2: Проверка через admin команду"
+          if docker exec university-mongodb mongosh --eval "db.adminCommand('ping')" 2>&1; then
+            echo "✅ MongoDB готов к работе (способ 2)!"
+            mongodb_ready=true
+            break
+          fi
+          
+          echo "Способ 3: Проверка статуса контейнера"
+          container_status=$(docker inspect university-mongodb --format='{{.State.Status}}' 2>/dev/null || echo "unknown")
+          echo "Статус контейнера: $container_status"
+          
+          if [ "$container_status" = "running" ]; then
+            echo "Контейнер запущен, но MongoDB не отвечает"
+            echo "Последние логи MongoDB:"
+            docker logs university-mongodb --tail 5
+          else
+            echo "❌ Контейнер не запущен или не найден"
+          fi
+          
           echo "Ожидание готовности MongoDB... ($i/30)"
           sleep 2
         done
         
-        echo "MongoDB запущен и готов к работе"
+        if [ "$mongodb_ready" = "true" ]; then
+          echo "✅ MongoDB успешно запущен и готов к работе!"
+        else
+          echo "❌ КРИТИЧЕСКАЯ ОШИБКА: MongoDB не готов к работе после 30 попыток!"
+          echo "=== ДИАГНОСТИКА ПРОБЛЕМЫ ==="
+          echo "Статус контейнера:"
+          docker ps -a | grep university-mongodb || echo "Контейнер не найден"
+          echo "Логи MongoDB (последние 20 строк):"
+          docker logs university-mongodb --tail 20
+          echo "Использование ресурсов:"
+          docker stats university-mongodb --no-stream || echo "Не удалось получить статистику"
+          echo "=== КОНЕЦ ДИАГНОСТИКИ ==="
+          echo "Продолжаем деплой несмотря на проблемы с MongoDB..."
+        fi
         
     - name: Build and deploy application locally
       run: |
@@ -181,8 +232,31 @@ jobs:
         echo "Checking if containers are running..."
         docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
         
+        echo "=== Проверка PostgreSQL ==="
+        if docker exec university-postgres pg_isready -U postgres -d university > /dev/null 2>&1; then
+          echo "✅ PostgreSQL работает корректно"
+        else
+          echo "❌ PostgreSQL не отвечает"
+        fi
+        
+        echo "=== Проверка MongoDB ==="
+        if docker exec university-mongodb mongosh --eval "print('MongoDB test')" > /dev/null 2>&1; then
+          echo "✅ MongoDB работает корректно"
+        else
+          echo "❌ MongoDB не отвечает"
+          echo "Логи MongoDB:"
+          docker logs university-mongodb --tail 10
+        fi
+        
+        echo "=== Проверка приложения ==="
         echo "Testing application endpoint..."
         sleep 10
-        curl -f http://localhost:8080/ || echo "Application not responding yet"
+        if curl -f http://localhost:8080/ > /dev/null 2>&1; then
+          echo "✅ Приложение отвечает на http://localhost:8080/"
+        else
+          echo "❌ Приложение не отвечает"
+          echo "Логи приложения:"
+          docker logs university-app --tail 10
+        fi
         
         echo "=== Deployment verification completed ==="
