@@ -192,7 +192,7 @@ jobs:
         
         # Запуск приложения
         echo "Starting application container..."
-        docker run -d --name university-app -p 8080:8080 \
+        docker run -d --name university-app -p 0.0.0.0:8080:8080 \
           -e DB_HOST=university-postgres \
           -e DB_PORT=5432 \
           -e DB_NAME=university \
@@ -265,12 +265,36 @@ jobs:
         echo "=== Проверка приложения ==="
         echo "Testing application endpoint..."
         sleep 10
+        
+        # Диагностика сетевых настроек
+        echo "=== Сетевая диагностика ==="
+        echo "Проверка портов:"
+        netstat -tlnp | grep :8080 || echo "Порт 8080 не слушается"
+        echo "Проверка Docker портов:"
+        docker port university-app || echo "Контейнер не пробросил порты"
+        echo "IP адрес машины:"
+        hostname -I
+        echo "Проверка firewall (ufw):"
+        ufw status || echo "ufw не установлен"
+        echo "Попытка открыть порт 8080 в firewall:"
+        ufw allow 8080 || echo "Не удалось открыть порт в firewall"
+        echo "=== Конец сетевой диагностики ==="
+        
         if curl -f http://localhost:8080/ > /dev/null 2>&1; then
           echo "✅ Приложение отвечает на http://localhost:8080/"
+          echo "🌐 Доступные адреса:"
+          echo "   - http://localhost:8080"
+          echo "   - http://$(hostname -I | awk '{print $1}'):8080"
         else
-          echo "❌ Приложение не отвечает"
-          echo "Логи приложения:"
-          docker logs university-app --tail 10
+          echo "❌ Приложение не отвечает на localhost:8080"
+          echo "Попытка подключения к 0.0.0.0:8080..."
+          if curl -f http://0.0.0.0:8080/ > /dev/null 2>&1; then
+            echo "✅ Приложение отвечает на 0.0.0.0:8080"
+          else
+            echo "❌ Приложение не отвечает"
+            echo "Логи приложения:"
+            docker logs university-app --tail 20
+          fi
         fi
         
         echo "=== Deployment verification completed ==="

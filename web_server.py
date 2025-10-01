@@ -1333,10 +1333,11 @@ class QueryHandler(BaseHTTPRequestHandler):
 
 def run_server(port=8080):
     """Запуск веб-сервера"""
-    server_address = ('', port)
+    server_address = ('0.0.0.0', port)  # Слушаем на всех интерфейсах
     httpd = HTTPServer(server_address, QueryHandler)
     print(f"Веб-сервер запущен на порту {port}")
-    print(f"Откройте http://192.168.0.111:{port} в браузере")
+    print(f"Откройте http://localhost:{port} в браузере")
+    print(f"Или http://[IP-адрес-сервера]:{port} для внешнего доступа")
     httpd.serve_forever()
 
 if __name__ == "__main__":
