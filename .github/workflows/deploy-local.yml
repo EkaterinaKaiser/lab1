@@ -36,18 +36,21 @@ jobs:
         docker stop university-app || true
         docker rm university-app || true
         
-        # Остановка и удаление старых контейнеров базы данных
+        # Остановка и удаление старых контейнеров баз данных
         echo "Stopping and removing old database containers..."
         docker stop university-postgres || true
         docker rm university-postgres || true
+        docker stop university-mongodb || true
+        docker rm university-mongodb || true
         
         # Удаление старых образов приложения
         echo "Removing old application images..."
         docker rmi university-app:latest || true
         
-        # Удаление старого тома с данными БД
-        echo "Removing old database volume..."
+        # Удаление старых томов с данными БД
+        echo "Removing old database volumes..."
         docker volume rm university_postgres_data || true
+        docker volume rm university_mongodb_data || true
         
         # Очистка неиспользуемых образов и контейнеров
         echo "Cleaning up unused Docker resources..."
@@ -83,7 +86,34 @@ jobs:
           sleep 2
         done
         
-        echo "База данных запущена и готова к работе"
+        echo "База данных PostgreSQL запущена и готова к работе"
+        
+    - name: Setup MongoDB locally
+      run: |
+        echo "=== Setting up MongoDB locally ==="
+        
+        # Запуск MongoDB
+        echo "Starting MongoDB container..."
+        docker run -d --name university-mongodb \
+          -e MONGO_INITDB_ROOT_USERNAME=admin \
+          -e MONGO_INITDB_ROOT_PASSWORD=admin123 \
+          -e MONGO_INITDB_DATABASE=shop \
+          -p 27017:27017 \
+          -v university_mongodb_data:/data/db \
+          -v $(pwd)/mongodb/init:/docker-entrypoint-initdb.d \
+          mongo:7
+        
+        # Ожидание готовности MongoDB
+        echo "Ожидание готовности MongoDB..."
+        sleep 30
+        
+        # Проверка готовности MongoDB
+        until docker exec university-mongodb mongosh --eval "db.adminCommand('ping')" > /dev/null 2>&1; do
+          echo "Ожидание готовности MongoDB..."
+          sleep 2
+        done
+        
+        echo "MongoDB запущен и готов к работе"
         
     - name: Build and deploy application locally
       run: |
@@ -101,7 +131,13 @@ jobs:
           -e DB_NAME=university \
           -e DB_USER=postgres \
           -e DB_PASSWORD=postgres \
+          -e MONGO_HOST=university-mongodb \
+          -e MONGO_PORT=27017 \
+          -e MONGO_DB=shop \
+          -e MONGO_USER=admin \
+          -e MONGO_PASSWORD=admin123 \
           --link university-postgres:postgres \
+          --link university-mongodb:mongodb \
           university-app:latest
         
         echo "Приложение успешно развернуто!"
@@ -115,11 +151,17 @@ jobs:
         docker exec -i university-postgres psql -U postgres -d university < init/01_create_tables.sql
         
         # Заполнение базы данных тестовыми данными
-        echo "Заполнение базы данных тестовыми данными..."
+        echo "Заполнение PostgreSQL тестовыми данными..."
         docker exec -i university-postgres psql -U postgres -d university < init/02_insert_test_data.sql
-        echo "Тестовые данные успешно добавлены!"
+        echo "PostgreSQL тестовые данные успешно добавлены!"
         
-        echo "Инициализация базы данных завершена!"
+        # Инициализация MongoDB
+        echo "Инициализация MongoDB..."
+        docker exec -i university-mongodb mongosh shop --eval "load('/docker-entrypoint-initdb.d/01_init_collections.js')"
+        docker exec -i university-mongodb mongosh shop --eval "load('/docker-entrypoint-initdb.d/02_insert_test_data.js')"
+        echo "MongoDB тестовые данные успешно добавлены!"
+        
+        echo "Инициализация всех баз данных завершена!"
         
     - name: Verify deployment
       run: |

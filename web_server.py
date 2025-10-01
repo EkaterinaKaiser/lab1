@@ -3,11 +3,12 @@
 
 import os
 import psycopg2
+from pymongo import MongoClient
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 from datetime import datetime
 
-# Параметры подключения к базе данных из переменных окружения
+# Параметры подключения к PostgreSQL из переменных окружения
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 5432)),
@@ -16,13 +17,40 @@ DB_CONFIG = {
     'password': os.getenv('DB_PASSWORD', 'postgres')
 }
 
+# Параметры подключения к MongoDB из переменных окружения
+MONGO_CONFIG = {
+    'host': os.getenv('MONGO_HOST', 'localhost'),
+    'port': int(os.getenv('MONGO_PORT', 27017)),
+    'database': os.getenv('MONGO_DB', 'shop'),
+    'username': os.getenv('MONGO_USER', 'admin'),
+    'password': os.getenv('MONGO_PASSWORD', 'admin123')
+}
+
 def connect_to_db():
-    """Подключение к базе данных"""
+    """Подключение к PostgreSQL"""
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         return conn
     except psycopg2.Error as e:
-        print(f"Ошибка подключения к базе данных: {e}")
+        print(f"Ошибка подключения к PostgreSQL: {e}")
+        return None
+
+def connect_to_mongo():
+    """Подключение к MongoDB"""
+    try:
+        client = MongoClient(
+            host=MONGO_CONFIG['host'],
+            port=MONGO_CONFIG['port'],
+            username=MONGO_CONFIG['username'],
+            password=MONGO_CONFIG['password'],
+            authSource='admin'
+        )
+        db = client[MONGO_CONFIG['database']]
+        # Проверка подключения
+        client.admin.command('ping')
+        return db
+    except Exception as e:
+        print(f"Ошибка подключения к MongoDB: {e}")
         return None
 
 def execute_query(cursor, query, description):
@@ -51,6 +79,56 @@ def format_results(results, columns):
         html += "<tr>"
         for cell in row:
             html += f"<td style='padding: 8px;'>{cell}</td>"
+        html += "</tr>\n"
+    
+    html += "</table>"
+    return html
+
+def execute_mongo_query(db, query, description):
+    """Выполнение MongoDB запроса и возврат результатов"""
+    try:
+        # Выполняем JavaScript код в MongoDB
+        result = db.eval(query)
+        return result, []
+    except Exception as e:
+        print(f"Ошибка выполнения MongoDB запроса '{description}': {e}")
+        return [], []
+
+def format_mongo_results(results):
+    """Форматирование результатов MongoDB для HTML"""
+    if not results:
+        return "<p>Нет данных</p>"
+    
+    # Конвертируем результат в список, если это не список
+    if not isinstance(results, list):
+        results = [results]
+    
+    if not results:
+        return "<p>Нет данных</p>"
+    
+    # Получаем колонки из первого документа
+    first_doc = results[0]
+    if isinstance(first_doc, dict):
+        columns = list(first_doc.keys())
+    else:
+        return "<p>Неожиданный формат данных</p>"
+    
+    html = "<table border='1' style='border-collapse: collapse; width: 100%;'>\n"
+    html += "<tr>"
+    for col in columns:
+        html += f"<th style='padding: 8px; background-color: #f2f2f2;'>{col}</th>"
+    html += "</tr>\n"
+    
+    for doc in results:
+        html += "<tr>"
+        for col in columns:
+            value = doc.get(col, '')
+            # Обработка специальных типов данных
+            if isinstance(value, dict):
+                value = str(value)
+            elif isinstance(value, list):
+                value = str(value)
+            html += f"<td style='padding: 8px;'>{value}</td>"
         html += "</tr>\n"
     
     html += "</table>"
@@ -315,27 +393,182 @@ def get_queries():
         }
     ]
 
+def get_mongo_queries():
+    """Получение списка всех MongoDB запросов"""
+    return [
+        {
+            "title": "Список товаров с указанием их категорий",
+            "description": "Получить список всех товаров с названиями их категорий",
+            "query": """db.products.aggregate([
+  {
+    $lookup: {
+      from: "categories",
+      localField: "category_id",
+      foreignField: "_id",
+      as: "category"
+    }
+  },
+  {
+    $unwind: "$category"
+  },
+  {
+    $project: {
+      _id: 1,
+      name: 1,
+      price: 1,
+      stock: 1,
+      "category_name": "$category.category_name"
+    }
+  }
+])"""
+        },
+        {
+            "title": "Количество товаров в каждой категории",
+            "description": "Определить количество товаров в каждой категории",
+            "query": """db.products.aggregate([
+  {
+    $lookup: {
+      from: "categories",
+      localField: "category_id",
+      foreignField: "_id",
+      as: "category"
+    }
+  },
+  {
+    $unwind: "$category"
+  },
+  {
+    $group: {
+      _id: "$category.category_name",
+      count: { $sum: 1 }
+    }
+  },
+  {
+    $sort: { count: -1 }
+  }
+])"""
+        },
+        {
+            "title": "Клиенты с заказами выше определенной суммы",
+            "description": "Найти клиентов, совершивших заказы на сумму выше 50000 рублей",
+            "query": """db.customers.aggregate([
+  {
+    $lookup: {
+      from: "orders",
+      localField: "_id",
+      foreignField: "customer_id",
+      as: "orders"
+    }
+  },
+  {
+    $match: {
+      "orders.total_amount": { $gt: 50000 }
+    }
+  },
+  {
+    $project: {
+      _id: 1,
+      full_name: 1,
+      email: 1,
+      "total_orders": { $size: "$orders" },
+      "max_order_amount": { $max: "$orders.total_amount" }
+    }
+  }
+])"""
+        },
+        {
+            "title": "Товары от нескольких поставщиков",
+            "description": "Определить товары, которые поставляются более чем одним поставщиком",
+            "query": """db.products.aggregate([
+  {
+    $lookup: {
+      from: "order_items",
+      localField: "_id",
+      foreignField: "product_id",
+      as: "order_items"
+    }
+  },
+  {
+    $match: {
+      "order_items": { $exists: true, $ne: [] }
+    }
+  },
+  {
+    $addFields: {
+      "order_count": { $size: "$order_items" }
+    }
+  },
+  {
+    $match: {
+      "order_count": { $gt: 1 }
+    }
+  },
+  {
+    $project: {
+      _id: 1,
+      name: 1,
+      price: 1,
+      "order_count": 1
+    }
+  }
+])"""
+        },
+        {
+            "title": "Категории и количество товаров",
+            "description": "Получить список категорий и количество товаров в каждой из них",
+            "query": """db.categories.aggregate([
+  {
+    $lookup: {
+      from: "products",
+      localField: "_id",
+      foreignField: "category_id",
+      as: "products"
+    }
+  },
+  {
+    $project: {
+      _id: 1,
+      category_name: 1,
+      parent_id: 1,
+      "product_count": { $size: "$products" }
+    }
+  },
+  {
+    $sort: { product_count: -1 }
+  }
+])"""
+        }
+    ]
+
 class QueryHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/':
             self.serve_main_page()
         elif self.path == '/api/queries':
             self.serve_queries_api()
+        elif self.path == '/api/mongo-queries':
+            self.serve_mongo_queries_api()
         elif self.path.startswith('/api/query/'):
             query_id = self.path.split('/')[-1]
             self.serve_query_editor(query_id)
+        elif self.path.startswith('/api/mongo-query/'):
+            query_id = self.path.split('/')[-1]
+            self.serve_mongo_query_editor(query_id)
         else:
             self.send_error(404)
     
     def do_POST(self):
         if self.path == '/api/execute':
             self.execute_custom_query()
+        elif self.path == '/api/execute-mongo':
+            self.execute_custom_mongo_query()
         else:
             self.send_error(404)
 
     def serve_main_page(self):
         """Отображение главной страницы со списком запросов"""
         queries = get_queries()
+        mongo_queries = get_mongo_queries()
         
         html_content = f"""
         <!DOCTYPE html>
@@ -419,24 +652,60 @@ class QueryHandler(BaseHTTPRequestHandler):
         </head>
         <body>
             <div class="container">
-                <h1>SQL Запросы к Университетской базе данных</h1>
-                <p style="text-align: center; color: #666;">Выберите запрос для выполнения и просмотра результатов</p>
+                <h1>Базы данных - SQL и MongoDB</h1>
+                <p style="text-align: center; color: #666;">Выберите базу данных и запрос для выполнения</p>
                 
-                <div class="query-list">
+                <div style="display: flex; gap: 20px; margin-bottom: 30px;">
+                    <div style="flex: 1; padding: 20px; border: 2px solid #007bff; border-radius: 8px; background-color: #f8f9fa;">
+                        <h2 style="color: #007bff; margin-top: 0;">PostgreSQL - Университет</h2>
+                        <p>SQL запросы к реляционной базе данных университета</p>
+                        <a href="#postgresql" class="btn" style="background-color: #007bff;">Перейти к SQL запросам</a>
+                    </div>
+                    <div style="flex: 1; padding: 20px; border: 2px solid #28a745; border-radius: 8px; background-color: #f8f9fa;">
+                        <h2 style="color: #28a745; margin-top: 0;">MongoDB - Интернет-магазин</h2>
+                        <p>NoSQL запросы к документной базе данных магазина</p>
+                        <a href="#mongodb" class="btn" style="background-color: #28a745;">Перейти к MongoDB запросам</a>
+                    </div>
+                </div>
+                
+                <div id="postgresql">
+                    <h2 style="color: #007bff; border-bottom: 2px solid #007bff; padding-bottom: 10px;">PostgreSQL - Университетская база данных</h2>
+                    <div class="query-list">
         """
         
         for i, query in enumerate(queries, 1):
             html_content += f"""
-                    <div class="query-item">
-                        <div class="query-title">{i}. {query['title']}</div>
-                        <div class="query-description">{query['description']}</div>
-                        <div class="query-actions">
-                            <a href="/api/query/{i}" class="btn">Редактировать и выполнить</a>
+                        <div class="query-item">
+                            <div class="query-title">{i}. {query['title']}</div>
+                            <div class="query-description">{query['description']}</div>
+                            <div class="query-actions">
+                                <a href="/api/query/{i}" class="btn">Редактировать и выполнить</a>
+                            </div>
                         </div>
-                    </div>
             """
         
         html_content += f"""
+                    </div>
+                </div>
+                
+                <div id="mongodb" style="margin-top: 40px;">
+                    <h2 style="color: #28a745; border-bottom: 2px solid #28a745; padding-bottom: 10px;">MongoDB - Интернет-магазин</h2>
+                    <div class="query-list">
+        """
+        
+        for i, query in enumerate(mongo_queries, 1):
+            html_content += f"""
+                        <div class="query-item">
+                            <div class="query-title">{i}. {query['title']}</div>
+                            <div class="query-description">{query['description']}</div>
+                            <div class="query-actions">
+                                <a href="/api/mongo-query/{i}" class="btn" style="background-color: #28a745;">Редактировать и выполнить</a>
+                            </div>
+                        </div>
+            """
+        
+        html_content += f"""
+                    </div>
                 </div>
                 
                 <div class="timestamp">
@@ -755,6 +1024,269 @@ class QueryHandler(BaseHTTPRequestHandler):
                     conn.close()
             
             # Отправка ответа
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
+            
+        except json.JSONDecodeError:
+            response = {
+                "success": False,
+                "error": "Ошибка парсинга JSON данных"
+            }
+            self.send_response(400)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
+            
+        except Exception as e:
+            response = {
+                "success": False,
+                "error": f"Ошибка выполнения запроса: {str(e)}"
+            }
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
+
+    def serve_mongo_queries_api(self):
+        """API для получения списка MongoDB запросов"""
+        queries = get_mongo_queries()
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(json.dumps(queries, ensure_ascii=False).encode('utf-8'))
+
+    def serve_mongo_query_editor(self, query_id):
+        """Отображение редактора MongoDB запроса"""
+        try:
+            queries = get_mongo_queries()
+            query_index = int(query_id) - 1
+            
+            if query_index < 0 or query_index >= len(queries):
+                self.send_error(404)
+                return
+                
+            query_info = queries[query_index]
+            
+            html_content = f"""
+            <!DOCTYPE html>
+            <html lang="ru">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Редактор MongoDB - {query_info['title']}</title>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        margin: 20px;
+                        background-color: #f5f5f5;
+                    }}
+                    .container {{
+                        max-width: 1200px;
+                        margin: 0 auto;
+                        background-color: white;
+                        padding: 20px;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    }}
+                    .btn {{
+                        background-color: #28a745;
+                        color: white;
+                        padding: 10px 20px;
+                        border: none;
+                        border-radius: 4px;
+                        cursor: pointer;
+                        text-decoration: none;
+                        display: inline-block;
+                        margin-right: 10px;
+                    }}
+                    .btn:hover {{
+                        background-color: #218838;
+                    }}
+                    .btn-secondary {{
+                        background-color: #6c757d;
+                    }}
+                    .btn-secondary:hover {{
+                        background-color: #5a6268;
+                    }}
+                    .sql-textarea {{
+                        width: 100%;
+                        height: 300px;
+                        font-family: 'Courier New', monospace;
+                        font-size: 14px;
+                        border: 1px solid #ddd;
+                        border-radius: 4px;
+                        padding: 10px;
+                        resize: vertical;
+                    }}
+                    .query-section {{
+                        margin-bottom: 20px;
+                    }}
+                    .query-title {{
+                        font-size: 1.2em;
+                        font-weight: bold;
+                        color: #28a745;
+                        margin-bottom: 10px;
+                    }}
+                    .query-description {{
+                        color: #666;
+                        margin-bottom: 15px;
+                    }}
+                    .results-section {{
+                        margin-top: 20px;
+                        display: none;
+                    }}
+                    .success-message {{
+                        background-color: #d4edda;
+                        color: #155724;
+                        padding: 10px;
+                        border-radius: 4px;
+                        margin-bottom: 15px;
+                    }}
+                    .error-message {{
+                        background-color: #f8d7da;
+                        color: #721c24;
+                        padding: 10px;
+                        border-radius: 4px;
+                        margin-bottom: 15px;
+                    }}
+                    .loading {{
+                        text-align: center;
+                        color: #666;
+                        font-style: italic;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <a href="/" class="btn btn-secondary">← Назад к списку запросов</a>
+                    <h1>Редактор MongoDB запроса</h1>
+                    
+                    <div class="query-section">
+                        <div class="query-title">{query_info['title']}</div>
+                        <div class="query-description">{query_info['description']}</div>
+                        
+                        <div class="sql-editor">
+                            <label for="mongo-query"><strong>MongoDB запрос:</strong></label>
+                            <textarea id="mongo-query" class="sql-textarea" placeholder="Введите ваш MongoDB запрос здесь...">{query_info['query'].strip()}</textarea>
+                        </div>
+                        
+                        <div class="button-group">
+                            <button onclick="executeQuery()" class="btn">Выполнить запрос</button>
+                            <button onclick="resetQuery()" class="btn btn-secondary">Сбросить к исходному</button>
+                        </div>
+                        
+                        <div id="results-section" class="results-section">
+                            <h3>Результаты запроса:</h3>
+                            <div id="results-content"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <script>
+                    function executeQuery() {{
+                        const mongoQuery = document.getElementById('mongo-query').value;
+                        const resultsSection = document.getElementById('results-section');
+                        const resultsContent = document.getElementById('results-content');
+                        
+                        if (!mongoQuery.trim()) {{
+                            alert('Пожалуйста, введите MongoDB запрос');
+                            return;
+                        }}
+                        
+                        resultsContent.innerHTML = '<div class="loading">Выполняется запрос...</div>';
+                        resultsSection.style.display = 'block';
+                        
+                        fetch('/api/execute-mongo', {{
+                            method: 'POST',
+                            headers: {{
+                                'Content-Type': 'application/json',
+                            }},
+                            body: JSON.stringify({{
+                                query: mongoQuery,
+                                query_id: '{query_id}'
+                            }})
+                        }})
+                        .then(response => response.json())
+                        .then(data => {{
+                            if (data.success) {{
+                                resultsContent.innerHTML = data.html;
+                            }} else {{
+                                resultsContent.innerHTML = '<div class="error-message">Ошибка: ' + data.error + '</div>';
+                            }}
+                        }})
+                        .catch(error => {{
+                            resultsContent.innerHTML = '<div class="error-message">Ошибка выполнения запроса: ' + error.message + '</div>';
+                        }});
+                    }}
+                    
+                    function resetQuery() {{
+                        document.getElementById('mongo-query').value = `{query_info['query'].strip()}`;
+                        document.getElementById('results-section').style.display = 'none';
+                    }}
+                </script>
+            </body>
+            </html>
+            """
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html_content.encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500)
+
+    def execute_custom_mongo_query(self):
+        """Выполнение пользовательского MongoDB запроса"""
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            mongo_query = data.get('query', '')
+            query_id = data.get('query_id', '')
+            
+            if not mongo_query.strip():
+                response = {
+                    "success": False,
+                    "error": "Пустой MongoDB запрос"
+                }
+            else:
+                db = connect_to_mongo()
+                if not db:
+                    response = {
+                        "success": False,
+                        "error": "Ошибка подключения к MongoDB"
+                    }
+                else:
+                    results, columns = execute_mongo_query(db, mongo_query, "Пользовательский MongoDB запрос")
+                    
+                    results_html = format_mongo_results(results)
+                    
+                    html_content = f"""
+                    <div class="success-message">
+                        Запрос выполнен успешно! Найдено записей: {len(results) if isinstance(results, list) else 1}
+                    </div>
+                    <div>
+                        <strong>Выполненный запрос:</strong>
+                        <div class="sql-code" style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 4px; padding: 15px; margin: 10px 0; font-family: 'Courier New', monospace; font-size: 0.9em; overflow-x: auto; white-space: pre-wrap;">{mongo_query.strip()}</div>
+                    </div>
+                    <div>
+                        <strong>Результаты:</strong>
+                        {results_html}
+                    </div>
+                    <div style="text-align: center; color: #666; font-size: 0.9em; margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd;">
+                        Выполнено: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+                    </div>
+                    """
+                    
+                    response = {
+                        "success": True,
+                        "html": html_content
+                    }
+            
             self.send_response(200)
             self.send_header('Content-type', 'application/json; charset=utf-8')
             self.end_headers()
