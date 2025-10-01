@@ -1,5 +1,8 @@
 // Заполнение коллекций MongoDB тестовыми данными для интернет-магазина
 
+// Переключение на базу данных shop
+db = db.getSiblingDB('shop');
+
 // Очистка существующих данных
 db.categories.deleteMany({});
 db.products.deleteMany({});

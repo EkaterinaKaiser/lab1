@@ -88,11 +88,24 @@ def execute_mongo_query(db, query, description):
     """Выполнение MongoDB запроса и возврат результатов"""
     try:
         # Выполняем JavaScript код в MongoDB
-        result = db.eval(query)
+        # Убираем db. из начала запроса, так как db уже установлен
+        clean_query = query.strip()
+        if clean_query.startswith('db.'):
+            clean_query = clean_query[3:]
+        
+        # Выполняем команду через eval
+        result = db.eval(clean_query)
         return result, []
     except Exception as e:
         print(f"Ошибка выполнения MongoDB запроса '{description}': {e}")
-        return [], []
+        # Попробуем альтернативный способ
+        try:
+            # Если eval не работает, попробуем выполнить как обычную команду
+            result = list(db.command('eval', query))
+            return result, []
+        except Exception as e2:
+            print(f"Альтернативный способ также не сработал: {e2}")
+            return [], []
 
 def format_mongo_results(results):
     """Форматирование результатов MongoDB для HTML"""

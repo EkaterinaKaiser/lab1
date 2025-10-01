@@ -107,9 +107,22 @@ jobs:
         echo "Ожидание готовности MongoDB..."
         sleep 30
         
+        # Диагностика MongoDB
+        echo "=== MongoDB Диагностика ==="
+        echo "Статус контейнера:"
+        docker ps | grep university-mongodb || echo "Контейнер не найден"
+        echo "Логи MongoDB:"
+        docker logs university-mongodb --tail 10
+        echo "=== Конец диагностики ==="
+        
         # Проверка готовности MongoDB
-        until docker exec university-mongodb mongosh --eval "db.adminCommand('ping')" > /dev/null 2>&1; do
-          echo "Ожидание готовности MongoDB..."
+        echo "Проверка готовности MongoDB..."
+        for i in {1..30}; do
+          if docker exec university-mongodb mongosh --eval "print('MongoDB is ready')" > /dev/null 2>&1; then
+            echo "MongoDB готов к работе!"
+            break
+          fi
+          echo "Ожидание готовности MongoDB... ($i/30)"
           sleep 2
         done
         
@@ -157,9 +170,8 @@ jobs:
         
         # Инициализация MongoDB
         echo "Инициализация MongoDB..."
-        docker exec -i university-mongodb mongosh shop --eval "load('/docker-entrypoint-initdb.d/01_init_collections.js')"
-        docker exec -i university-mongodb mongosh shop --eval "load('/docker-entrypoint-initdb.d/02_insert_test_data.js')"
-        echo "MongoDB тестовые данные успешно добавлены!"
+        # MongoDB автоматически выполнит скрипты из /docker-entrypoint-initdb.d при первом запуске
+        echo "MongoDB инициализирован автоматически при запуске контейнера"
         
         echo "Инициализация всех баз данных завершена!"
         
