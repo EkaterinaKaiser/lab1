@@ -38,16 +38,16 @@ def connect_to_db():
 def connect_to_mongo():
     """Подключение к MongoDB"""
     try:
-        client = MongoClient(
-            host=MONGO_CONFIG['host'],
-            port=MONGO_CONFIG['port'],
-            username=MONGO_CONFIG['username'],
-            password=MONGO_CONFIG['password'],
-            authSource='admin'
-        )
+        # Для MongoDB 4.4 используем более простую строку подключения
+        connection_string = f"mongodb://{MONGO_CONFIG['username']}:{MONGO_CONFIG['password']}@{MONGO_CONFIG['host']}:{MONGO_CONFIG['port']}/{MONGO_CONFIG['database']}?authSource=admin"
+        print(f"Подключение к MongoDB: {MONGO_CONFIG['host']}:{MONGO_CONFIG['port']}")
+        
+        client = MongoClient(connection_string)
         db = client[MONGO_CONFIG['database']]
+        
         # Проверка подключения
         client.admin.command('ping')
+        print("MongoDB подключен успешно!")
         return db
     except Exception as e:
         print(f"Ошибка подключения к MongoDB: {e}")

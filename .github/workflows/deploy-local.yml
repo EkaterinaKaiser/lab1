@@ -185,7 +185,10 @@ jobs:
         
         # Сборка образа
         echo "Building application image..."
+        echo "Установка зависимостей:"
+        cat requirements.txt
         docker build -t university-app:latest .
+        echo "Образ приложения собран успешно!"
         
         # Запуск приложения
         echo "Starting application container..."
@@ -204,7 +207,18 @@ jobs:
           --link university-mongodb:mongodb \
           university-app:latest
         
-        echo "Приложение успешно развернуто!"
+        echo "Приложение запущено!"
+        
+        # Проверка запуска приложения
+        echo "Проверка запуска приложения..."
+        sleep 5
+        if docker ps | grep university-app > /dev/null; then
+          echo "✅ Контейнер приложения запущен"
+        else
+          echo "❌ Контейнер приложения не запущен"
+          echo "Логи приложения:"
+          docker logs university-app --tail 20
+        fi
         
     - name: Initialize database with data
       run: |
