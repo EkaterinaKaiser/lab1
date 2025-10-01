@@ -110,7 +110,7 @@ jobs:
           -p 27017:27017 \
           -v university_mongodb_data:/data/db \
           -v $(pwd)/mongodb/init:/docker-entrypoint-initdb.d \
-          mongo:7
+          mongo:4.4
         
         echo "Контейнер MongoDB запущен с ID: $(docker ps -q --filter name=university-mongodb)"
         
@@ -134,15 +134,15 @@ jobs:
           echo "Попытка $i/30: Проверка подключения к MongoDB..."
           
           # Пробуем разные способы проверки
-          echo "Способ 1: Простая команда mongosh"
-          if docker exec university-mongodb mongosh --eval "print('MongoDB is ready')" 2>&1; then
+          echo "Способ 1: Простая команда mongo"
+          if docker exec university-mongodb mongo --eval "print('MongoDB is ready')" 2>&1; then
             echo "✅ MongoDB готов к работе (способ 1)!"
             mongodb_ready=true
             break
           fi
           
           echo "Способ 2: Проверка через admin команду"
-          if docker exec university-mongodb mongosh --eval "db.adminCommand('ping')" 2>&1; then
+          if docker exec university-mongodb mongo --eval "db.adminCommand('ping')" 2>&1; then
             echo "✅ MongoDB готов к работе (способ 2)!"
             mongodb_ready=true
             break
@@ -240,7 +240,7 @@ jobs:
         fi
         
         echo "=== Проверка MongoDB ==="
-        if docker exec university-mongodb mongosh --eval "print('MongoDB test')" > /dev/null 2>&1; then
+        if docker exec university-mongodb mongo --eval "print('MongoDB test')" > /dev/null 2>&1; then
           echo "✅ MongoDB работает корректно"
         else
           echo "❌ MongoDB не отвечает"
