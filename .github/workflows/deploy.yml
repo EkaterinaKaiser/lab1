@@ -270,7 +270,21 @@ jobs:
             echo "  suricata: $(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' suricata 2>/dev/null || echo 'не найден')"
             echo ""
             echo "Проверка правил iptables для ICMP:"
-            sudo iptables -L DOCKER-USER -n -v 2>/dev/null | grep icmp || sudo iptables -L FORWARD -n -v 2>/dev/null | grep icmp || echo "Правила iptables для ICMP не найдены"
+            VICTIM_IP_CHECK=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' victim 2>/dev/null || echo "")
+            if [ ! -z "$VICTIM_IP_CHECK" ]; then
+              echo "Ищем правила для IP $VICTIM_IP_CHECK:"
+              sudo iptables -L DOCKER-USER -n -v 2>/dev/null | grep -E "(icmp|$VICTIM_IP_CHECK)" || \
+              sudo iptables -L FORWARD -n -v 2>/dev/null | grep -E "(icmp|$VICTIM_IP_CHECK)" || \
+              echo "Правила iptables для ICMP не найдены"
+              echo ""
+              echo "Все правила в цепочке DOCKER-USER:"
+              sudo iptables -L DOCKER-USER -n -v 2>/dev/null | head -10 || echo "Цепочка DOCKER-USER не существует"
+              echo ""
+              echo "Все правила в цепочке FORWARD (первые 10):"
+              sudo iptables -L FORWARD -n -v 2>/dev/null | head -10 || echo "Не удалось получить правила FORWARD"
+            else
+              echo "Не удалось определить IP адрес victim для проверки"
+            fi
             echo ""
             
             # Показываем логи Suricata из eve.json
