@@ -6,24 +6,37 @@ sleep 5
 
 # Определяем имя Docker сети - пробуем разные варианты
 NETWORK_NAME=""
-for name in "lab-infrastructure_labnet" "lr1_labnet" "labnet"; do
-  if docker network inspect "$name" >/dev/null 2>&1; then
-    NETWORK_NAME="$name"
-    echo "Найдена Docker сеть: $NETWORK_NAME"
-    break
-  fi
-done
+echo "Поиск Docker сети..."
+echo "Доступные сети:"
+docker network ls
 
-if [ -z "$NETWORK_NAME" ]; then
-  echo "Не удалось найти Docker сеть, пробуем первую доступную..."
-  NETWORK_NAME=$(docker network ls --format '{{.Name}}' | grep -E "(labnet|bridge)" | head -1 || echo "")
+# Пробуем найти сеть по имени контейнера victim
+VICTIM_NETWORK=$(docker inspect victim --format='{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null || echo "")
+if [ ! -z "$VICTIM_NETWORK" ]; then
+  NETWORK_NAME="$VICTIM_NETWORK"
+  echo "Найдена сеть через контейнер victim: $NETWORK_NAME"
+else
+  # Пробуем разные варианты имен
+  for name in "lab-infrastructure_labnet" "lr1_labnet" "labnet"; do
+    if docker network inspect "$name" >/dev/null 2>&1; then
+      NETWORK_NAME="$name"
+      echo "Найдена Docker сеть: $NETWORK_NAME"
+      break
+    fi
+  done
+  
+  if [ -z "$NETWORK_NAME" ]; then
+    echo "Поиск сети по паттерну..."
+    NETWORK_NAME=$(docker network ls --format '{{.Name}}' | grep -E "(labnet|lab-infrastructure)" | head -1 || echo "")
+  fi
 fi
 
 if [ -z "$NETWORK_NAME" ]; then
   echo "ОШИБКА: Не удалось определить Docker сеть!"
   echo "Доступные сети:"
   docker network ls
-  NETWORK_NAME="docker0"
+  # Используем первую доступную bridge сеть
+  NETWORK_NAME=$(docker network ls --format '{{.Name}}' | grep -v "bridge" | head -1 || echo "")
 fi
 
 echo "Используем сеть: $NETWORK_NAME"
@@ -39,15 +52,31 @@ if [ -z "$BRIDGE" ] || [ "$BRIDGE" = "br-" ]; then
   fi
 fi
 
-# Проверяем существование интерфейса
+# Проверяем существование интерфейса и его состояние
 if [ -z "$BRIDGE" ] || ! ip link show "$BRIDGE" >/dev/null 2>&1; then
   echo "Bridge интерфейс $BRIDGE не найден, ищем доступные bridge интерфейсы..."
-  # Ищем все bridge интерфейсы
-  BRIDGE=$(ip link show | grep -E "^[0-9]+: (br-|docker)" | head -1 | cut -d: -f2 | tr -d ' ' || echo "")
+  # Ищем все активные bridge интерфейсы (состояние UP)
+  BRIDGE=$(ip link show | grep -E "^[0-9]+: br-" | grep -v "state DOWN" | head -1 | cut -d: -f2 | tr -d ' ' || echo "")
+  
+  if [ -z "$BRIDGE" ]; then
+    echo "Не найден активный bridge интерфейс, используем первый доступный br-..."
+    BRIDGE=$(ip link show | grep -E "^[0-9]+: br-" | head -1 | cut -d: -f2 | tr -d ' ' || echo "")
+  fi
   
   if [ -z "$BRIDGE" ]; then
     echo "Не найден bridge интерфейс, используем docker0..."
     BRIDGE="docker0"
+  fi
+fi
+
+# Проверяем состояние интерфейса - используем только активные (UP)
+if ip link show "$BRIDGE" 2>/dev/null | grep -q "state DOWN\|NO-CARRIER"; then
+  echo "ВНИМАНИЕ: Интерфейс $BRIDGE находится в состоянии DOWN!"
+  echo "Ищем активный bridge интерфейс..."
+  ACTIVE_BRIDGE=$(ip link show | grep -E "^[0-9]+: br-" | grep "state UP" | head -1 | cut -d: -f2 | tr -d ' ' || echo "")
+  if [ ! -z "$ACTIVE_BRIDGE" ]; then
+    echo "Найден активный bridge: $ACTIVE_BRIDGE"
+    BRIDGE="$ACTIVE_BRIDGE"
   fi
 fi
 
