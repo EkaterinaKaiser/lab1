@@ -90,9 +90,9 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
             cd ~/lab-infrastructure
             echo "=== Статус контейнеров ==="
-            docker-compose ps || docker compose ps
+            docker compose ps 2>/dev/null || docker-compose ps 2>/dev/null || echo "Ошибка: Docker Compose не найден"
             echo ""
             echo "=== Логи Suricata ==="
-            docker-compose logs suricata --tail=20 || docker compose logs suricata --tail=20
+            docker compose logs suricata --tail=20 2>/dev/null || docker-compose logs suricata --tail=20 2>/dev/null || echo "Не удалось получить логи"
           EOF
 
