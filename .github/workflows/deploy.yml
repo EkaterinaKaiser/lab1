@@ -22,15 +22,48 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Copy files to server
+      - name: Cleanup previous deployment
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
+            echo "=== Очистка предыдущего деплоя ==="
+            
+            # Переходим в директорию проекта, если она существует
+            if [ -d ~/lab-infrastructure ]; then
+              cd ~/lab-infrastructure
+              
+              # Останавливаем и удаляем контейнеры
+              echo "Остановка и удаление контейнеров..."
+              docker compose down -v 2>/dev/null || docker-compose down -v 2>/dev/null || true
+              
+              # Удаляем контейнеры по имени, если они все еще существуют
+              docker rm -f attacker victim suricata 2>/dev/null || true
+              
+              # Удаляем сеть, если она существует
+              docker network rm labnet 2>/dev/null || docker network rm lr1_labnet 2>/dev/null || true
+              
+              # Удаляем старые файлы проекта
+              echo "Удаление старых файлов проекта..."
+              rm -rf ~/lab-infrastructure/*
+              rm -rf ~/lab-infrastructure/.* 2>/dev/null || true
+            else
+              echo "Директория проекта не найдена, создаем новую..."
+              mkdir -p ~/lab-infrastructure
+            fi
+            
+            # Создаем необходимые директории
             mkdir -p ~/lab-infrastructure/{rules,logs}
+            
+            echo "Очистка завершена"
           EOF
-          
+
+      - name: Copy files to server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             docker-compose.yml \
             suricata.yaml \
@@ -66,9 +99,6 @@ jobs:
               sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
               sudo chmod +x /usr/local/bin/docker-compose
             fi
-            
-            # Останавливаем и удаляем старые контейнеры
-            docker-compose down || docker compose down || true
             
             # Запускаем новые контейнеры
             docker-compose up -d --build || docker compose up -d --build
