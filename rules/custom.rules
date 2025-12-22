@@ -3,11 +3,14 @@
 # Определяем переменную для сети victim (172.20.0.0/16 - сеть labnet)
 # В Suricata $HOME_NET будет определен в конфигурации, но мы можем использовать конкретные IP
 
+# Логируем все ICMP пакеты для диагностики (даже если Suricata не может их блокировать)
+alert icmp any any -> $HOME_NET any (msg:"ICMP packet detected to HOME_NET"; sid:1000000; rev:1;)
+
 # Блокировка ICMP Echo Request (ping) к victim
-drop icmp any any -> [172.20.0.0/16] any (msg:"ICMP Echo Request blocked to victim"; icode:0; itype:8; sid:1000001; rev:1;)
+drop icmp any any -> $HOME_NET any (msg:"ICMP Echo Request blocked to victim"; icode:0; itype:8; sid:1000001; rev:1;)
 
 # Блокировка всех ICMP пакетов к victim (более широкое правило)
-drop icmp any any -> [172.20.0.0/16] any (msg:"ICMP traffic blocked to victim"; sid:1000002; rev:1;)
+drop icmp any any -> $HOME_NET any (msg:"ICMP traffic blocked to victim"; sid:1000002; rev:1;)
 
 # Разрешаем HTTP трафик
 pass http any any -> any any (msg:"HTTP traffic allowed"; sid:1000003; rev:1;)

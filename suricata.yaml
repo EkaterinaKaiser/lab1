@@ -13,9 +13,10 @@ vars:
     EXTERNAL_NET: "any"
 
 # Настройки AF_PACKET для перехвата трафика
-# Указываем только один интерфейс, чтобы избежать предупреждения
+# Интерфейс будет определен динамически при запуске (bridge интерфейс Docker сети)
+# Здесь указываем дефолтный интерфейс, который будет переопределен через командную строку
 af-packet:
-  - interface: eth0
+  - interface: default
     cluster-id: 99
     cluster-type: cluster_flow
     defrag: yes
@@ -54,6 +55,10 @@ outputs:
         pretty: yes
       # Логируем все события, даже если они не соответствуют правилам
       community-id: false
+      # Включаем логирование всех ICMP событий
+      include-metadata: yes
+      xff:
+        enabled: no
 
 # Классификация и референсы
 classification-file: /etc/suricata/classification.config

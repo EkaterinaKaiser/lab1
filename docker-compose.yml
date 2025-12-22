@@ -40,17 +40,20 @@ services:
     container_name: suricata
     hostname: suricata
     privileged: true
-    networks:
-      - labnet
+    # Используем network_mode: host для доступа к bridge интерфейсам на хосте
+    # Это позволяет Suricata видеть трафик между контейнерами в Docker сети
+    network_mode: host
     volumes:
       - ./suricata.yaml:/etc/suricata/suricata.yaml:ro
       - ./rules:/etc/suricata/rules:ro
       - ./logs:/var/log/suricata
+      - ./start-suricata.sh:/start-suricata.sh:ro
     depends_on:
       - victim
       - attacker
     entrypoint: []
-    command: ["/bin/sh", "-c", "sleep 5 && suricata -c /etc/suricata/suricata.yaml -i eth0 --af-packet -l /var/log/suricata"]
+    # Используем скрипт для определения bridge интерфейса и запуска Suricata
+    command: ["/bin/sh", "/start-suricata.sh"]
 
 networks:
   labnet:

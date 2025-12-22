@@ -68,7 +68,12 @@ jobs:
             docker-compose.yml \
             suricata.yaml \
             setup-iptables.sh \
+            start-suricata.sh \
             ${SSH_USER}@${SSH_HOST}:~/lab-infrastructure/
+          
+          # Делаем скрипт запуска Suricata исполняемым
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} \
+            "chmod +x ~/lab-infrastructure/start-suricata.sh"
           
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             -r rules/* \
@@ -287,8 +292,26 @@ jobs:
             fi
             echo ""
             
+            # Диагностика: проверяем, видит ли Suricata трафик
+            echo "=== Диагностика Suricata ==="
+            echo "Проверка интерфейсов в контейнере Suricata:"
+            docker exec suricata ip addr show 2>/dev/null || echo "Не удалось получить информацию об интерфейсах"
+            echo ""
+            echo "Проверка трафика на интерфейсе eth0 Suricata:"
+            docker exec suricata tcpdump -i eth0 -c 5 icmp 2>/dev/null & 
+            TCPDUMP_PID=$!
+            sleep 2
+            docker exec attacker ping -c 1 victim >/dev/null 2>&1 || true
+            sleep 1
+            kill $TCPDUMP_PID 2>/dev/null || true
+            echo ""
+            
             # Показываем логи Suricata из eve.json
             echo "=== Логи Suricata (eve.json) - события защиты ==="
+            echo ""
+            echo "ВАЖНО: Suricata может не видеть трафик между контейнерами в одной Docker сети,"
+            echo "так как трафик проходит напрямую через bridge, минуя eth0 контейнера Suricata."
+            echo "Блокировка ICMP работает через iptables на хосте."
             echo ""
             
             # Проверяем наличие файла eve.json на хосте
