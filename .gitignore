@@ -1,0 +1,17 @@
+# Логи
+logs/
+*.log
+
+# SSH ключи
+*.pem
+*.key
+deploy_key
+
+# Docker
+.docker/
+
+# Временные файлы
+*.tmp
+*.swp
+*~
+

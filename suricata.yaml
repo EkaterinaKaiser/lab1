@@ -1,0 +1,96 @@
+%YAML 1.1
+---
+# Suricata конфигурация для блокировки ICMP на victim
+
+# Режим работы
+runmodes:
+  - runmode: workers
+
+# Определение сетей
+vars:
+  address-groups:
+    HOME_NET: "[172.20.0.0/16]"
+    EXTERNAL_NET: "any"
+
+# Настройки AF_PACKET для перехвата трафика
+af-packet:
+  - interface: eth0
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: yes
+    use-mmap: yes
+    tpacket-v3: yes
+
+# Настройки для IPS режима (блокировка пакетов)
+nfqueue:
+  mode: accept
+  repeat-mark: 1
+  repeat-mask: 1
+  bypass-mark: 2
+  bypass-mask: 2
+  queue-balance: [0, 1, 2, 3]
+
+# Файлы с правилами
+rule-files:
+  - /etc/suricata/rules/custom.rules
+
+# EVE лог (основной формат логов)
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      types:
+        - alert
+        - drop
+        - http
+        - dns
+        - tls
+        - flow
+      json:
+        pretty: yes
+
+# Классификация и референсы
+classification-file: /etc/suricata/classification.config
+reference-config-file: /etc/suricata/reference.config
+
+# Протоколы прикладного уровня
+app-layer:
+  protocols:
+    http:
+      enabled: yes
+    dns:
+      enabled: yes
+    tls:
+      enabled: yes
+
+# Логирование
+logging:
+  default-log-format: "[%i] %t - (%f:%l) <%d> (%n) -- "
+  outputs:
+    - console:
+        enabled: yes
+        level: notice
+    - file:
+        enabled: yes
+        level: info
+        filename: suricata.log
+
+# Настройки обнаружения
+detect:
+  profile: medium
+  custom-values:
+    toclient-groups: 100
+    toserver-groups: 100
+
+# Настройки потоков
+flow:
+  memcap: 134217728
+  hash-size: 65536
+  prealloc: 10000
+  emergency-recovery: 30
+
+# Настройки статистики
+stats:
+  enabled: yes
+  interval: 8

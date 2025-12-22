@@ -1,0 +1,98 @@
+name: Deploy Lab Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy files to server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
+            mkdir -p ~/lab-infrastructure/{rules,logs}
+          EOF
+          
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            docker-compose.yml \
+            suricata.yaml \
+            setup-iptables.sh \
+            ${SSH_USER}@${SSH_HOST}:~/lab-infrastructure/
+          
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            -r rules/* \
+            ${SSH_USER}@${SSH_HOST}:~/lab-infrastructure/rules/
+          
+          # Делаем скрипт исполняемым
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} \
+            "chmod +x ~/lab-infrastructure/setup-iptables.sh"
+
+      - name: Deploy containers
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
+            cd ~/lab-infrastructure
+            
+            # Проверяем наличие Docker и Docker Compose
+            if ! command -v docker &> /dev/null; then
+              echo "Docker не установлен. Устанавливаем Docker..."
+              curl -fsSL https://get.docker.com -o get-docker.sh
+              sudo sh get-docker.sh
+              sudo usermod -aG docker $USER
+            fi
+            
+            if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+              echo "Docker Compose не установлен. Устанавливаем..."
+              sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+            fi
+            
+            # Останавливаем и удаляем старые контейнеры
+            docker-compose down || docker compose down || true
+            
+            # Запускаем новые контейнеры
+            docker-compose up -d --build || docker compose up -d --build
+            
+            # Ждем запуска контейнеров
+            sleep 10
+            
+            # Показываем статус
+            docker-compose ps || docker compose ps
+            
+            echo "Деплой завершен!"
+          EOF
+
+      - name: Verify deployment
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
+            cd ~/lab-infrastructure
+            echo "=== Статус контейнеров ==="
+            docker-compose ps || docker compose ps
+            echo ""
+            echo "=== Логи Suricata ==="
+            docker-compose logs suricata --tail=20 || docker compose logs suricata --tail=20
+          EOF
+
