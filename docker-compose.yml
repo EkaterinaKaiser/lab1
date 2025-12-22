@@ -49,12 +49,8 @@ services:
     depends_on:
       - victim
       - attacker
-    command:
-      - /bin/sh
-      - -c
-      - |
-        sleep 5
-        suricata -c /etc/suricata/suricata.yaml -i eth0 --af-packet -l /var/log/suricata
+    entrypoint: []
+    command: ["/bin/sh", "-c", "sleep 5 && suricata -c /etc/suricata/suricata.yaml -i eth0 --af-packet -l /var/log/suricata"]
 
 networks:
   labnet:
