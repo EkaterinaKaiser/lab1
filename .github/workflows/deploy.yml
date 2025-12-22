@@ -294,16 +294,22 @@ jobs:
             
             # Диагностика: проверяем, видит ли Suricata трафик
             echo "=== Диагностика Suricata ==="
-            echo "Проверка интерфейсов в контейнере Suricata:"
-            docker exec suricata ip addr show 2>/dev/null || echo "Не удалось получить информацию об интерфейсах"
+            echo "Проверка интерфейсов на хосте (Suricata в режиме host):"
+            ip link show | grep -E "^[0-9]+:" | head -15 || echo "Не удалось получить информацию об интерфейсах"
             echo ""
-            echo "Проверка трафика на интерфейсе eth0 Suricata:"
-            docker exec suricata tcpdump -i eth0 -c 5 icmp 2>/dev/null & 
-            TCPDUMP_PID=$!
-            sleep 2
-            docker exec attacker ping -c 1 victim >/dev/null 2>&1 || true
-            sleep 1
-            kill $TCPDUMP_PID 2>/dev/null || true
+            echo "Проверка bridge интерфейсов Docker:"
+            docker network inspect lab-infrastructure_labnet --format='{{range $k, $v := .Options}}{{if eq $k "com.docker.network.bridge.name"}}Bridge: {{$v}}{{end}}{{end}}' 2>/dev/null || \
+            docker network inspect lr1_labnet --format='{{range $k, $v := .Options}}{{if eq $k "com.docker.network.bridge.name"}}Bridge: {{$v}}{{end}}{{end}}' 2>/dev/null || \
+            echo "Не удалось определить bridge интерфейс"
+            echo ""
+            echo "Логи запуска Suricata (последние 30 строк):"
+            docker logs suricata --tail=30 2>/dev/null || echo "Не удалось получить логи Suricata"
+            echo ""
+            echo "Проверка процесса Suricata и используемого интерфейса:"
+            docker exec suricata ps aux | grep suricata | grep -v grep || echo "Процесс Suricata не найден"
+            echo ""
+            echo "Проверка, какой интерфейс использует Suricata:"
+            docker exec suricata cat /proc/$(docker exec suricata pgrep suricata | head -1)/cmdline 2>/dev/null | tr '\0' ' ' || echo "Не удалось получить команду Suricata"
             echo ""
             
             # Показываем логи Suricata из eve.json
