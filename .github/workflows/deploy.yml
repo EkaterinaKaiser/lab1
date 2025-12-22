@@ -145,6 +145,11 @@ jobs:
             docker inspect suricata 2>/dev/null | grep -A 5 '"State"' || echo "Контейнер suricata не найден"
             echo ""
             
+            # Проверяем логи запуска Suricata
+            echo "=== Логи запуска Suricata (первые 50 строк) ==="
+            docker logs suricata --tail=50 2>/dev/null || echo "Не удалось получить логи Suricata"
+            echo ""
+            
             echo "Деплой завершен!"
           EOF
 

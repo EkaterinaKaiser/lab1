@@ -59,17 +59,38 @@ ip link show | grep -E "^[0-9]+:" | head -15
 echo ""
 echo "Проверка интерфейса $BRIDGE:"
 if ip link show "$BRIDGE" >/dev/null 2>&1; then
-  ip link show "$BRIDGE"
+  ip link show "$BRIDGE" | head -5
   echo "✓ Интерфейс $BRIDGE существует"
+  INTERFACE="$BRIDGE"
 else
   echo "✗ Интерфейс $BRIDGE не найден!"
-  echo "Используем первый доступный bridge..."
-  BRIDGE=$(ip link show | grep -E "^[0-9]+: br-" | head -1 | cut -d: -f2 | tr -d ' ' || echo "eth0")
+  echo "Ищем все bridge интерфейсы..."
+  ALL_BRIDGES=$(ip link show | grep -E "^[0-9]+: (br-|docker)" | cut -d: -f2 | tr -d ' ')
+  if [ ! -z "$ALL_BRIDGES" ]; then
+    INTERFACE=$(echo "$ALL_BRIDGES" | head -1)
+    echo "Используем первый найденный bridge: $INTERFACE"
+  else
+    echo "Bridge интерфейсы не найдены, используем docker0..."
+    INTERFACE="docker0"
+  fi
 fi
+
+# Финальная проверка
+if ! ip link show "$INTERFACE" >/dev/null 2>&1; then
+  echo "ОШИБКА: Интерфейс $INTERFACE не существует!"
+  echo "Список всех интерфейсов:"
+  ip link show
+  echo "Используем eth0 как fallback..."
+  INTERFACE="eth0"
+fi
+
+echo "=========================================="
+echo "ФИНАЛЬНЫЙ ВЫБОР: Suricata будет мониторить интерфейс: $INTERFACE"
 echo "=========================================="
 echo ""
 
 # Запускаем Suricata с указанием bridge интерфейса
-echo "Запуск Suricata с интерфейсом: $BRIDGE"
-exec suricata -c /etc/suricata/suricata.yaml -i "$BRIDGE" --af-packet -l /var/log/suricata
+echo "Запуск Suricata с интерфейсом: $INTERFACE"
+echo "Команда: suricata -c /etc/suricata/suricata.yaml -i $INTERFACE --af-packet -l /var/log/suricata"
+exec suricata -c /etc/suricata/suricata.yaml -i "$INTERFACE" --af-packet -l /var/log/suricata
 
