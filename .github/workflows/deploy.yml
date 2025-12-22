@@ -77,6 +77,18 @@ jobs:
           # Делаем скрипт исполняемым
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} \
             "chmod +x ~/lab-infrastructure/setup-iptables.sh"
+          
+          # Проверяем, что файлы скопированы корректно
+          echo "=== Проверка скопированных файлов ==="
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
+            cd ~/lab-infrastructure
+            echo "Содержимое директории:"
+            ls -la
+            echo ""
+            echo "Проверка docker-compose.yml (секция suricata):"
+            grep -A 10 "suricata:" docker-compose.yml || echo "Секция suricata не найдена"
+            echo ""
+          EOF
 
       - name: Deploy containers
         env:
@@ -100,14 +112,33 @@ jobs:
               sudo chmod +x /usr/local/bin/docker-compose
             fi
             
+            # Проверяем содержимое docker-compose.yml перед запуском
+            echo "=== Проверка docker-compose.yml ==="
+            cat docker-compose.yml | grep -A 15 "suricata:" || echo "Секция suricata не найдена"
+            echo ""
+            
+            # Проверяем наличие файлов конфигурации
+            echo "=== Проверка файлов конфигурации ==="
+            ls -la suricata.yaml rules/ 2>/dev/null || echo "Файлы конфигурации не найдены"
+            echo ""
+            
             # Запускаем новые контейнеры
+            echo "=== Запуск контейнеров ==="
             docker-compose up -d --build || docker compose up -d --build
             
             # Ждем запуска контейнеров
+            echo "Ожидание запуска контейнеров..."
             sleep 10
             
-            # Показываем статус
+            # Показываем статус всех контейнеров
+            echo "=== Статус всех контейнеров ==="
             docker-compose ps || docker compose ps
+            echo ""
+            
+            # Проверяем статус контейнера Suricata отдельно
+            echo "=== Детальная информация о контейнере Suricata ==="
+            docker inspect suricata 2>/dev/null | grep -A 5 '"State"' || echo "Контейнер suricata не найден"
+            echo ""
             
             echo "Деплой завершен!"
           EOF
@@ -119,10 +150,46 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
             cd ~/lab-infrastructure
-            echo "=== Статус контейнеров ==="
+            
+            echo "=== Статус всех контейнеров ==="
             docker compose ps 2>/dev/null || docker-compose ps 2>/dev/null || echo "Ошибка: Docker Compose не найден"
             echo ""
-            echo "=== Логи Suricata ==="
-            docker compose logs suricata --tail=20 2>/dev/null || docker-compose logs suricata --tail=20 2>/dev/null || echo "Не удалось получить логи"
+            
+            echo "=== Детальная информация о контейнере Suricata ==="
+            if docker ps -a | grep -q suricata; then
+              echo "Контейнер существует. Статус:"
+              docker ps -a | grep suricata
+              echo ""
+              echo "Информация о состоянии:"
+              docker inspect suricata --format='{{.State.Status}} - {{.State.Error}}' 2>/dev/null || echo "Не удалось получить информацию"
+              echo ""
+              echo "Команда запуска контейнера:"
+              docker inspect suricata --format='{{.Config.Cmd}}' 2>/dev/null || echo "Не удалось получить команду"
+              echo ""
+            else
+              echo "Контейнер suricata не найден!"
+            fi
+            echo ""
+            
+            echo "=== Логи Suricata (последние 50 строк) ==="
+            docker compose logs suricata --tail=50 2>/dev/null || docker-compose logs suricata --tail=50 2>/dev/null || echo "Не удалось получить логи"
+            echo ""
+            
+            echo "=== Проверка файлов конфигурации Suricata ==="
+            echo "Содержимое suricata.yaml (первые 20 строк):"
+            head -20 suricata.yaml 2>/dev/null || echo "Файл не найден"
+            echo ""
+            echo "Правила Suricata:"
+            ls -la rules/ 2>/dev/null || echo "Директория rules не найдена"
+            cat rules/custom.rules 2>/dev/null || echo "Файл правил не найден"
+            echo ""
+            
+            echo "=== Попытка запуска Suricata вручную для диагностики ==="
+            docker exec suricata sh -c "which suricata" 2>/dev/null || echo "Не удалось выполнить команду в контейнере"
+            docker exec suricata sh -c "suricata --version" 2>/dev/null || echo "Suricata не найдена в контейнере"
+            echo ""
+            
+            echo "=== Логи всех контейнеров (последние 10 строк каждого) ==="
+            docker compose logs --tail=10 2>/dev/null || docker-compose logs --tail=10 2>/dev/null || echo "Не удалось получить логи"
           EOF
 
