@@ -13,6 +13,7 @@ vars:
     EXTERNAL_NET: "any"
 
 # Настройки AF_PACKET для перехвата трафика
+# Указываем только один интерфейс, чтобы избежать предупреждения
 af-packet:
   - interface: eth0
     cluster-id: 99
@@ -20,6 +21,7 @@ af-packet:
     defrag: yes
     use-mmap: yes
     tpacket-v3: yes
+    threads: auto
 
 # Настройки для IPS режима (блокировка пакетов)
 nfqueue:

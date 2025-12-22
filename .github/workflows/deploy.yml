@@ -193,3 +193,114 @@ jobs:
             docker compose logs --tail=10 2>/dev/null || docker-compose logs --tail=10 2>/dev/null || echo "Не удалось получить логи"
           EOF
 
+      - name: Test Suricata protection
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
+            cd ~/lab-infrastructure
+            
+            echo "=== Тестирование защиты Suricata ==="
+            echo ""
+            
+            # Устанавливаем jq для форматирования JSON, если его нет
+            if ! command -v jq &> /dev/null; then
+              echo "Установка jq для форматирования JSON..."
+              sudo apt-get update -qq && sudo apt-get install -y -qq jq || echo "Не удалось установить jq, будет использован cat"
+            fi
+            echo ""
+            
+            # Ждем, чтобы Suricata успела полностью запуститься
+            echo "Ожидание полного запуска Suricata (15 секунд)..."
+            sleep 15
+            echo ""
+            
+            # Очищаем старые логи перед тестом (опционально, чтобы видеть только новые события)
+            echo "=== Очистка старых логов перед тестом ==="
+            # Логи монтируются на хост в директорию logs/
+            if [ -f logs/eve.json ]; then
+              echo "" > logs/eve.json || echo "Не удалось очистить логи (это нормально)"
+            fi
+            sleep 2
+            echo ""
+            
+            # Тест 1: ICMP ping (должен быть заблокирован Suricata)
+            echo "=== Тест 1: ICMP ping на victim (должен быть заблокирован) ==="
+            echo "Выполняем ping с контейнера attacker на victim..."
+            docker exec attacker ping -c 3 victim 2>&1 || echo "Ping завершился с ошибкой (ожидаемо, если ICMP заблокирован)"
+            echo ""
+            sleep 3
+            
+            # Тест 2: HTTP запрос (должен пройти успешно)
+            echo "=== Тест 2: HTTP запрос на victim (должен пройти успешно) ==="
+            echo "Выполняем curl с контейнера attacker на victim..."
+            docker exec attacker curl -v http://victim 2>&1 || echo "HTTP запрос завершился с ошибкой"
+            echo ""
+            sleep 3
+            
+            # Показываем логи Suricata из eve.json
+            echo "=== Логи Suricata (eve.json) - события защиты ==="
+            echo ""
+            
+            # Проверяем наличие файла eve.json на хосте
+            if [ -f logs/eve.json ]; then
+              echo "Содержимое eve.json (форматированное с помощью jq):"
+              echo ""
+              
+              # Показываем логи с jq, если доступен, иначе просто cat
+              if command -v jq &> /dev/null; then
+                # eve.json содержит одну JSON строку на событие (NDJSON формат)
+                # Используем jq для обработки каждой строки
+                cat logs/eve.json | jq -R 'fromjson?' 2>/dev/null | jq -s '.' | jq '.' | head -100 || \
+                cat logs/eve.json | head -50
+              else
+                cat logs/eve.json | head -50 || echo "Файл пуст или недоступен"
+              fi
+              echo ""
+              
+              # Показываем статистику событий
+              echo "=== Статистика событий Suricata ==="
+              if command -v jq &> /dev/null; then
+                echo "Количество событий drop (блокировки):"
+                cat logs/eve.json | jq -R 'fromjson? | select(.event_type=="drop")' 2>/dev/null | wc -l || echo "0"
+                echo ""
+                echo "Количество HTTP событий:"
+                cat logs/eve.json | jq -R 'fromjson? | select(.event_type=="http")' 2>/dev/null | wc -l || echo "0"
+                echo ""
+                echo "События drop (блокировки ICMP) - последние 5:"
+                cat logs/eve.json | jq -R 'fromjson? | select(.event_type=="drop")' 2>/dev/null | jq -s '.' | jq '.[0:5]' || echo "Нет событий drop"
+                echo ""
+                echo "HTTP события - последние 5:"
+                cat logs/eve.json | jq -R 'fromjson? | select(.event_type=="http")' 2>/dev/null | jq -s '.' | jq '.[0:5]' || echo "Нет HTTP событий"
+              else
+                echo "jq не установлен, показываем сырые данные:"
+                cat logs/eve.json | head -20
+              fi
+            else
+              echo "Файл logs/eve.json не найден. Проверяем директорию логов:"
+              ls -la logs/ 2>/dev/null || echo "Директория логов недоступна"
+              echo ""
+              echo "Попытка получить логи из контейнера:"
+              docker exec suricata ls -la /var/log/suricata/ 2>/dev/null || echo "Директория логов в контейнере недоступна"
+            fi
+            echo ""
+            
+            # Показываем также текстовые логи Suricata
+            echo "=== Текстовые логи Suricata (suricata.log) ==="
+            if [ -f logs/suricata.log ]; then
+              tail -20 logs/suricata.log
+            else
+              docker exec suricata tail -20 /var/log/suricata/suricata.log 2>/dev/null || echo "Текстовые логи недоступны"
+            fi
+            echo ""
+            
+            echo "=== Тестирование завершено ==="
+            echo ""
+            echo "Ожидаемые результаты:"
+            echo "1. ICMP ping должен быть заблокирован (нет ответа от victim)"
+            echo "2. HTTP запрос должен пройти успешно (получен ответ от victim)"
+            echo "3. В логах Suricata должны быть события 'drop' для ICMP"
+            echo "4. В логах Suricata должны быть события 'http' для HTTP запросов"
+          EOF
+
