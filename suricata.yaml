@@ -49,8 +49,11 @@ outputs:
         - dns
         - tls
         - flow
+        - icmp
       json:
         pretty: yes
+      # Логируем все события, даже если они не соответствуют правилам
+      community-id: false
 
 # Классификация и референсы
 classification-file: /etc/suricata/classification.config

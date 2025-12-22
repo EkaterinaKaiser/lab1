@@ -16,11 +16,10 @@ fi
 
 echo "IP адрес victim: $VICTIM_IP"
 
-# Получаем имя сетевого интерфейса Docker сети
-NETWORK_NAME="lr1_labnet"
-BRIDGE_NAME=$(docker network inspect $NETWORK_NAME -f '{{range .Options}}{{if eq (index (split . "=") 0) "com.docker.network.bridge.name"}}{{index (split . "=") 1}}{{end}}{{end}}' 2>/dev/null || echo "br-$(docker network inspect $NETWORK_NAME -f '{{.Id}}' | cut -c1-12)")
+# Получаем имя Docker сети из контейнера victim
+NETWORK_NAME=$(docker inspect victim --format='{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null || echo "labnet")
 
-echo "Имя bridge интерфейса: $BRIDGE_NAME"
+echo "Имя Docker сети: $NETWORK_NAME"
 
 # Блокируем ICMP пакеты к victim через iptables
 # Это альтернативный способ блокировки, если Suricata не может блокировать напрямую
