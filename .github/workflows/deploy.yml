@@ -226,6 +226,13 @@ jobs:
             sleep 15
             echo ""
             
+            # Устанавливаем ebtables для блокировки на уровне L2 (если нужно)
+            echo "=== Установка ebtables для блокировки на уровне L2 ==="
+            if ! command -v ebtables >/dev/null 2>&1; then
+              echo "Установка ebtables..."
+              sudo apt-get update -qq && sudo apt-get install -y -qq ebtables || echo "Не удалось установить ebtables"
+            fi
+            
             # Настраиваем iptables для реальной блокировки ICMP через Suricata
             echo "=== Настройка iptables для блокировки ICMP ==="
             if [ -f setup-iptables.sh ]; then

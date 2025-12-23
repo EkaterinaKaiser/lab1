@@ -70,17 +70,44 @@ if [ $RULE_ADDED -eq 0 ]; then
   exit 1
 fi
 
+# ВАЖНО: Трафик между контейнерами в одной Docker сети проходит на уровне L2 через bridge
+# iptables работает на уровне L3 и может не блокировать такой трафик
+# Используем ebtables для блокировки на уровне L2 (если доступен)
+echo ""
+echo "=== Попытка блокировки ICMP на уровне L2 через ebtables ==="
+if command -v ebtables >/dev/null 2>&1; then
+  # Получаем MAC адрес контейнера victim
+  VICTIM_MAC=$(docker inspect victim --format='{{range .NetworkSettings.Networks}}{{.MacAddress}}{{end}}' 2>/dev/null || echo "")
+  if [ ! -z "$VICTIM_MAC" ] && [ ! -z "$BRIDGE_NAME" ]; then
+    echo "MAC адрес victim: $VICTIM_MAC"
+    echo "Блокируем ICMP на уровне L2 через bridge $BRIDGE_NAME..."
+    # Блокируем ICMP пакеты к MAC адресу victim
+    ebtables -A FORWARD -p IPv4 --ip-protocol icmp -d "$VICTIM_MAC" -j DROP 2>/dev/null && \
+    echo "✓ Правило ebtables добавлено для блокировки ICMP к $VICTIM_MAC" || \
+    echo "Не удалось добавить правило ebtables (может потребоваться установка ebtables)"
+  fi
+else
+  echo "ebtables не установлен. Для блокировки трафика между контейнерами на уровне L2"
+  echo "установите ebtables: sudo apt-get install ebtables"
+fi
+
 # Проверяем, что правило добавлено
 echo ""
 echo "Проверка добавленных правил:"
-echo "Правила в цепочке FORWARD:"
+echo "Правила в цепочке FORWARD (iptables):"
 iptables -L FORWARD -n -v 2>/dev/null | grep -E "(icmp|$VICTIM_IP)" | head -5 || echo "Правила не найдены"
 echo ""
 if iptables -L DOCKER-USER >/dev/null 2>&1; then
-  echo "Правила в цепочке DOCKER-USER:"
+  echo "Правила в цепочке DOCKER-USER (iptables):"
   iptables -L DOCKER-USER -n -v 2>/dev/null | grep -E "(icmp|$VICTIM_IP)" | head -5 || echo "Правила не найдены"
 fi
 
+echo ""
+echo "ВАЖНО: Трафик между контейнерами в одной Docker сети может проходить напрямую"
+echo "через bridge на уровне L2, минуя iptables. Для реальной блокировки используйте:"
+echo "1. ebtables (блокировка на уровне L2)"
+echo "2. Suricata в режиме IPS с NFQUEUE"
+echo "3. Размещение контейнеров в разных сетях"
 echo ""
 echo "Для удаления правил выполните:"
 echo "  iptables -D FORWARD -p icmp -d $VICTIM_IP -j DROP"
@@ -88,4 +115,7 @@ if [ ! -z "$BRIDGE_NAME" ]; then
   echo "  iptables -D FORWARD -i $BRIDGE_NAME -p icmp -d $VICTIM_IP -j DROP"
 fi
 echo "  iptables -D DOCKER-USER -p icmp -d $VICTIM_IP -j DROP"
+if command -v ebtables >/dev/null 2>&1 && [ ! -z "$VICTIM_MAC" ]; then
+  echo "  ebtables -D FORWARD -p IPv4 --ip-protocol icmp -d $VICTIM_MAC -j DROP"
+fi
 

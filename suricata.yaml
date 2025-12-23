@@ -4,7 +4,7 @@
 
 # Режим работы
 runmodes:
-  - runmode: workers
+- runmode: workers
 
 # Определение сетей
 vars:
@@ -26,11 +26,11 @@ af-packet:
 
 # Настройки для IPS режима (блокировка пакетов)
 nfqueue:
-  mode: accept
-  repeat-mark: 1
-  repeat-mask: 1
-  bypass-mark: 2
-  bypass-mask: 2
+mode: accept
+repeat-mark: 1
+repeat-mask: 1
+bypass-mark: 2
+bypass-mask: 2
   queue-balance: [0, 1, 2, 3]
 
 # Файлы с правилами
@@ -39,15 +39,15 @@ rule-files:
 
 # EVE лог (основной формат логов)
 outputs:
-  - eve-log:
-      enabled: yes
-      filetype: regular
-      filename: eve.json
-      types:
-        - alert
-        - drop
-        - http
-        - dns
+- eve-log:
+enabled: yes
+filetype: regular
+filename: eve.json
+types:
+- alert
+- drop
+- http
+- dns
         - tls
         - flow
         - icmp
@@ -66,7 +66,7 @@ reference-config-file: /etc/suricata/reference.config
 
 # Протоколы прикладного уровня
 app-layer:
-  protocols:
+protocols:
     http:
       enabled: yes
     dns:
@@ -77,14 +77,14 @@ app-layer:
 # Логирование
 logging:
   default-log-format: "[%i] %t - (%f:%l) <%d> (%n) -- "
-  outputs:
-    - console:
+outputs:
+- console:
         enabled: yes
         level: notice
-    - file:
-        enabled: yes
-        level: info
-        filename: suricata.log
+- file:
+enabled: yes
+level: info
+filename: suricata.log
 
 # Настройки обнаружения
 detect:
