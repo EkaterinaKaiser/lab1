@@ -1,94 +1,73 @@
 %YAML 1.1
 ---
-# Suricata конфигурация для блокировки ICMP на victim
+# Suricata конфигурация для IPS-режима (блокировка через NFQUEUE)
 
-# Режим работы
 runmodes:
-- runmode: workers
+  - runmode: workers
 
-# Определение сетей
 vars:
   address-groups:
     HOME_NET: "[172.20.0.0/16]"
     EXTERNAL_NET: "any"
 
-# Настройки AF_PACKET для перехвата трафика
-# Интерфейс будет определен динамически при запуске (bridge интерфейс Docker сети)
-# Здесь указываем дефолтный интерфейс, который будет переопределен через командную строку
-af-packet:
-  - interface: default
-    cluster-id: 99
-    cluster-type: cluster_flow
-    defrag: yes
-    use-mmap: yes
-    tpacket-v3: yes
-    threads: auto
-
-# Настройки для IPS режима (блокировка пакетов)
 nfq:
   - queue: 0
     thread-group: 0
     bypass: false
     repeat: false
-    route_queue: 0
+    route-queue: 0
     mark: 1
     mask: 1
   - queue: 1
     thread-group: 1
     bypass: false
     repeat: false
-    route_queue: 1
+    route-queue: 1
     mark: 2
     mask: 2
   - queue: 2
     thread-group: 2
     bypass: false
     repeat: false
-    route_queue: 2
+    route-queue: 2
     mark: 4
     mask: 4
   - queue: 3
     thread-group: 3
     bypass: false
     repeat: false
-    route_queue: 3
+    route-queue: 3
     mark: 8
     mask: 8
 
-# Файлы с правилами
 rule-files:
   - /etc/suricata/rules/custom.rules
 
-# EVE лог (основной формат логов)
 outputs:
-- eve-log:
-enabled: yes
-filetype: regular
-filename: eve.json
-types:
-- alert
-- drop
-- http
-- dns
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      types:
+        - alert
+        - drop
+        - http
+        - dns
         - tls
         - flow
         - icmp
       json:
         pretty: yes
-      # Логируем все события, даже если они не соответствуют правилам
-      community-id: false
-      # Включаем логирование всех ICMP событий
       include-metadata: yes
+      community-id: false
       xff:
         enabled: no
 
-# Классификация и референсы
 classification-file: /etc/suricata/classification.config
 reference-config-file: /etc/suricata/reference.config
 
-# Протоколы прикладного уровня
 app-layer:
-protocols:
+  protocols:
     http:
       enabled: yes
     dns:
@@ -96,33 +75,29 @@ protocols:
     tls:
       enabled: yes
 
-# Логирование
 logging:
   default-log-format: "[%i] %t - (%f:%l) <%d> (%n) -- "
-outputs:
-- console:
+  outputs:
+    - console:
         enabled: yes
         level: notice
-- file:
-enabled: yes
-level: info
-filename: suricata.log
+    - file:
+        enabled: yes
+        level: info
+        filename: suricata.log
 
-# Настройки обнаружения
 detect:
   profile: medium
   custom-values:
     toclient-groups: 100
     toserver-groups: 100
 
-# Настройки потоков
 flow:
   memcap: 134217728
   hash-size: 65536
   prealloc: 10000
   emergency-recovery: 30
 
-# Настройки статистики
 stats:
   enabled: yes
   interval: 8

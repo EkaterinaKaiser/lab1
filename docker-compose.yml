@@ -36,24 +36,29 @@ services:
       "
 
   suricata:
-    image: jasonish/suricata:latest
-    container_name: suricata
-    hostname: suricata
-    privileged: true
-    # Используем network_mode: host для доступа к bridge интерфейсам на хосте
-    # Это позволяет Suricata видеть трафик между контейнерами в Docker сети
-    network_mode: host
-    volumes:
-      - ./suricata.yaml:/etc/suricata/suricata.yaml:ro
-      - ./rules:/etc/suricata/rules:ro
-      - ./logs:/var/log/suricata
-      - ./start-suricata.sh:/start-suricata.sh:ro
-    depends_on:
-      - victim
-      - attacker
-    entrypoint: []
-    # Используем скрипт для определения bridge интерфейса и запуска Suricata
-    command: ["/bin/sh", "/start-suricata.sh"]
+  image: jasonish/suricata:latest
+  container_name: suricata
+  hostname: suricata
+  privileged: true
+  volumes:
+    - ./suricata.yaml:/etc/suricata/suricata.yaml:ro
+    - ./rules:/etc/suricata/rules:ro
+    - ./logs:/var/log/suricata
+  depends_on:
+    - victim
+    - attacker
+  command:
+    - suricata
+    - -c
+    - /etc/suricata/suricata.yaml
+    - -q
+    - "0"
+    - -q
+    - "1"
+    - -q
+    - "2"
+    - -q
+    - "3"
 
 networks:
   labnet:
