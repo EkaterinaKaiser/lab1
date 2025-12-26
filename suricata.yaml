@@ -25,13 +25,35 @@ af-packet:
     threads: auto
 
 # Настройки для IPS режима (блокировка пакетов)
-nfqueue:
-mode: accept
-repeat-mark: 1
-repeat-mask: 1
-bypass-mark: 2
-bypass-mask: 2
-  queue-balance: [0, 1, 2, 3]
+nfq:
+  - queue: 0
+    thread-group: 0
+    bypass: false
+    repeat: false
+    route_queue: 0
+    mark: 1
+    mask: 1
+  - queue: 1
+    thread-group: 1
+    bypass: false
+    repeat: false
+    route_queue: 1
+    mark: 2
+    mask: 2
+  - queue: 2
+    thread-group: 2
+    bypass: false
+    repeat: false
+    route_queue: 2
+    mark: 4
+    mask: 4
+  - queue: 3
+    thread-group: 3
+    bypass: false
+    repeat: false
+    route_queue: 3
+    mark: 8
+    mask: 8
 
 # Файлы с правилами
 rule-files:
