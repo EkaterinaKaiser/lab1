@@ -167,12 +167,13 @@ jobs:
           echo "Запуск Suricata с принудительной загрузкой правил..."
           setsid nohup sudo -b sh -c '
             exec > /var/log/suricata/startup.log 2>&1
-            exec sudo suricata \
+            exec suricata \
               -c /etc/suricata/suricata.yaml \
               -q 0 \
               --pidfile /var/run/suricata.pid \
               --set logging.console.enabled=no \
               --set detect.reload-prules=true \
+              --init-fully \
               --set detect.profiling-rules.enabled=yes
           ' </dev/null >/dev/null 2>&1 &
 
