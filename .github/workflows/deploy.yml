@@ -86,25 +86,6 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
             cd ~/lab-infrastructure
             
-            # Проверяем наличие Docker и Docker Compose
-            if ! command -v docker &> /dev/null; then
-              echo "Docker не установлен. Устанавливаем Docker..."
-              curl -fsSL https://get.docker.com -o get-docker.sh
-              sudo sh get-docker.sh
-              sudo usermod -aG docker $USER
-            fi
-            
-            if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-              echo "Docker Compose не установлен. Устанавливаем..."
-              sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-              sudo chmod +x /usr/local/bin/docker-compose
-            fi
-            
-            # Проверяем содержимое docker-compose.yml перед запуском
-            echo "=== Проверка docker-compose.yml ==="
-            cat docker-compose.yml | grep -A 15 "suricata:" || echo "Секция suricata не найдена"
-            echo ""
-            
             # Проверяем наличие файлов конфигурации
             echo "=== Проверка файлов конфигурации ==="
             ls -la suricata.yaml rules/ 2>/dev/null || echo "Файлы конфигурации не найдены"
@@ -116,7 +97,7 @@ jobs:
             
             # Ждем запуска контейнеров
             echo "Ожидание запуска контейнеров..."
-            sleep 10
+            sleep 20
             
             # Показываем статус всех контейнеров
             echo "=== Статус всех контейнеров ==="
