@@ -35,10 +35,6 @@ outputs:
         - dns
         - tls
         - flow
-        - fileinfo
-        - smtp
-        - ssh
-        - stats
       json:
         pretty: no
       include-metadata: yes
