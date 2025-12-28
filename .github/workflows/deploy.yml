@@ -93,7 +93,7 @@ jobs:
             
             # Запускаем новые контейнеры
             echo "=== Запуск контейнеров ==="
-            docker-compose up -d --build || docker compose up -d --build
+            docker compose up -d --build
             
             # Ждем запуска контейнеров
             echo "Ожидание запуска контейнеров..."
@@ -101,7 +101,7 @@ jobs:
             
             # Показываем статус всех контейнеров
             echo "=== Статус всех контейнеров ==="
-            docker-compose ps || docker compose ps
+            docker compose ps
             echo ""
             
             # Проверяем статус контейнера Suricata отдельно
