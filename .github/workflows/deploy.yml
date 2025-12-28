@@ -151,18 +151,47 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
             echo "=== Запуск Suricata в режиме IPS ==="
-            
-            # 1. Загружаем модуль NFQUEUE
-            sudo modprobe nfnetlink_queue
-            
-            # 2. Запускаем Suricata
+
+
+            # 1. Очистка
+            sudo pkill -9 -f suricata || true
+            sleep 3
+            sudo rm -f /var/run/suricata.pid || true
+
+
+            # 2. Загрузка модуля
+            sudo modprobe nfnetlink_queue 2>/dev/null || echo "Модуль уже загружен"
+
+            # 3. Запуск в фоне
+            echo "Запуск Suricata (фоновый режим)..."
             sudo suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3 --pidfile /var/run/suricata.pid &
-            
-            # 3. Проверяем статус
-            if pgrep suricata; then
-              echo "Suricata запущена (PID: $(pgrep suricata))"
+            SURICATA_PID=$!
+            echo "PID процесса: $SURICATA_PID"
+
+            # 4. Ожидание полной инициализации
+            echo "Ожидание старта движка (до 60 сек)..."
+            timeout 60s bash -c '
+              while true; do
+                if sudo grep -q "Engine started" /var/log/suricata/suricata.log 2>/dev/null; then
+                  echo "Suricata инициализирована"
+                  exit 0
+                fi
+                sleep 2
+              done
+            '
+
+            if [ $? -ne 0 ]; then
+              echo "Ошибка: тайм‑аут ожидания инициализации Suricata"
+              sudo tail -n 50 /var/log/suricata/suricata.log
+              exit 1
+            fi
+
+            # 5. Финальная проверка
+            if ps -p $SURICATA_PID > /dev/null; then
+              echo "Suricata успешно запущена (PID: $SURICATA_PID)"
+              exit 0
             else
-              echo "Ошибка: Suricata не запустилась!"
+              echo "Ошибка: процесс завершён до инициализации"
               exit 1
             fi
           EOF
