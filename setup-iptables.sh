@@ -17,5 +17,5 @@ done
 echo "Добавление NFQUEUE-правила для цепочки DOCKER-USER..."
 sudo iptables -I DOCKER-USER -j NFQUEUE --queue-balance 0:3 --queue-bypass
 
-echo "✅ Правила iptables успешно настроены для Suricata IPS"
+echo "Правила iptables успешно настроены для Suricata IPS"
 echo "Теперь Suricata будет получать все пакеты и принимать решение о блокировке."

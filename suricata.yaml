@@ -7,7 +7,7 @@ runmodes:
 
 vars:
   address-groups:
-    HOME_NET: "[172.20.0.0/16]"
+    HOME_NET: "172.20.0.0/16"
     EXTERNAL_NET: "any"
 
 nfq:
