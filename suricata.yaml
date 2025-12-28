@@ -1,48 +1,28 @@
 %YAML 1.1
 ---
-# Suricata конфигурация для IPS-режима (блокировка через NFQUEUE)
+# Suricata конфигурация для IPS-режима на хосте (через NFQUEUE)
+# Используется с: suricata -c suricata.yaml -q 0
 
 runmodes:
   - runmode: workers
 
 vars:
   address-groups:
-    HOME_NET: "172.20.0.0/16"
+    # Покрываем все стандартные Docker-сети (172.16.0.0/12)
+    HOME_NET: "[172.16.0.0/12]"
     EXTERNAL_NET: "any"
 
+# --- NFQUEUE: главный драйвер для IPS ---
 nfq:
-  - queue: 0
-    thread-group: 0
-    bypass: false
-    repeat: false
-    route-queue: 0
-    mark: 1
-    mask: 1
-  - queue: 1
-    thread-group: 1
-    bypass: false
-    repeat: false
-    route-queue: 1
-    mark: 2
-    mask: 2
-  - queue: 2
-    thread-group: 2
-    bypass: false
-    repeat: false
-    route-queue: 2
-    mark: 4
-    mask: 4
-  - queue: 3
-    thread-group: 3
-    bypass: false
-    repeat: false
-    route-queue: 3
-    mark: 8
-    mask: 8
+  mode: accept
+  # bypass: false  # по умолчанию
+  # repeat-mark/repeat-mask — не нужны при mode: accept
 
+# --- Правила ---
 rule-files:
   - /etc/suricata/rules/custom.rules
 
+# --- Вывод событий ---
 outputs:
   - eve-log:
       enabled: yes
@@ -50,22 +30,21 @@ outputs:
       filename: eve.json
       types:
         - alert
-        - drop
+        - drop      # ⚠️ критично: логировать ЗАБЛОКИРОВАННЫЕ пакеты!
         - http
         - dns
         - tls
         - flow
         - icmp
       json:
-        pretty: yes
+        pretty: no  # экономим место (в лабе можно yes)
       include-metadata: yes
       community-id: false
-      xff:
-        enabled: no
 
 classification-file: /etc/suricata/classification.config
 reference-config-file: /etc/suricata/reference.config
 
+# --- Анализ прикладного уровня ---
 app-layer:
   protocols:
     http:
@@ -75,6 +54,7 @@ app-layer:
     tls:
       enabled: yes
 
+# --- Логирование ---
 logging:
   default-log-format: "[%i] %t - (%f:%l) <%d> (%n) -- "
   outputs:
@@ -86,25 +66,21 @@ logging:
         level: info
         filename: suricata.log
 
+# --- Детекция ---
 detect:
   profile: medium
   custom-values:
     toclient-groups: 100
     toserver-groups: 100
 
+# --- Потоки ---
 flow:
   memcap: 134217728
   hash-size: 65536
   prealloc: 10000
   emergency-recovery: 30
 
+# --- Статистика ---
 stats:
   enabled: yes
   interval: 8
-
-af-packet:
-  - interface: docker0
-    threads: auto
-    defrag: yes
-    cluster-id: 99
-    cluster-type: cluster_flow
