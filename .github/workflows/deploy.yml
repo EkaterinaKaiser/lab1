@@ -47,6 +47,7 @@ jobs:
             docker rm -f attacker victim 2>/dev/null || true
 
             # Удаляем сеть (если существует)
+            docker network rm labnet 2>/dev/null || true
             docker network rm lab-infrastructure_labnet 2>/dev/null || true
 
             # Очищаем папку
@@ -217,7 +218,7 @@ jobs:
             set -e
             cd ~/lab-infrastructure
 
-            docker network create lab-infrastructure_labnet 2>/dev/null || true
+            docker network create labnet 2>/dev/null || true
 
             docker compose up -d --build
 
