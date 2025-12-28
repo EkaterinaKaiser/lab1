@@ -38,6 +38,10 @@ jobs:
               echo "Остановка и удаление контейнеров..."
               docker compose down -v 2>/dev/null || docker-compose down -v 2>/dev/null || true
               
+              echo "Остановка Suricata..."
+              sudo pkill -f suricata || true
+              sudo rm -f /var/run/suricata.pid || true
+
               # Удаляем контейнеры по имени, если они все еще существуют
               docker rm -f attacker victim suricata 2>/dev/null || true
               
