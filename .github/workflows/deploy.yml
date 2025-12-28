@@ -107,53 +107,45 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
           set -e
-          echo "=== Запуск Suricata в режиме IPS (nfq) ==="
+          echo "=== Запуск Suricata в IPS-режиме с принудительной загрузкой правил ==="
 
           sudo modprobe nfnetlink_queue 2>/dev/null || true
           sudo pkill -f "suricata.*-c /etc/suricata/suricata.yaml" 2>/dev/null || true
           sleep 1
           sudo rm -f /var/run/suricata.pid 2>/dev/null || true
 
-          echo "Запуск Suricata в фоне (полное отсоединение)..."
+          echo "Запуск Suricata..."
           nohup sudo suricata \
             -c /etc/suricata/suricata.yaml \
             -q 0 \
             --pidfile /var/run/suricata.pid \
             --set logging.console.enabled=no \
+            --set detect.reload-prules=true \  # ← ОБЯЗАТЕЛЬНО
             > /var/log/suricata/startup.log 2>&1 < /dev/null &
-          
-          # Ждём PID-файла
-          for i in {1..15}; do
-            if [ -f /var/run/suricata.pid ]; then
-              PID=$(cat /var/run/suricata.pid)
-              echo "Suricata запущена (PID: $PID)"
-              break
-            fi
-            sleep 1
-          done
 
+          sleep 2
           if [ ! -f /var/run/suricata.pid ]; then
-            echo "❌ PID-файл не создан. Лог запуска:"
-            cat /var/log/suricata/startup.log 2>/dev/null || echo "(лог пуст)"
+            cat /var/log/suricata/startup.log
             exit 1
           fi
 
-          # Ждём инициализации (теперь можно, т.к. Suricata в фоне)
+          PID=$(cat /var/run/suricata.pid)
+          echo "PID: $PID"
+
+          # Ждём загрузки правил (появления alert/drop в логе)
           timeout 20 bash -c '
-            while ! sudo grep -q "Engine started" /var/log/suricata/suricata.log 2>/dev/null; do
-              if ! kill -0 "$(cat /var/run/suricata.pid)" 2>/dev/null; then
-                echo "Suricata упала"
-                exit 1
-              fi
+            while ! sudo grep -q "rules successfully loaded" /var/log/suricata/suricata.log 2>/dev/null &&
+                  ! sudo grep -q "detect.*rules_loaded.*[1-9]" /var/log/suricata/suricata.log 2>/dev/null; do
+              kill -0 "$PID" || exit 1
               sleep 0.5
             done
           ' || {
-            echo "❌ Таймаут инициализации"
-            sudo tail -n 30 /var/log/suricata/suricata.log 2>/dev/null
+            echo "❌ Правила не загружены"
+            sudo tail -n 50 /var/log/suricata/suricata.log
             exit 1
           }
 
-          echo "✅ Suricata работает (PID: $(cat /var/run/suricata.pid))"
+          echo "✅ Suricata запущена и загрузила правила"
           exit 0
           EOF
 
