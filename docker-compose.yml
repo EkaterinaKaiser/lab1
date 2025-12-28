@@ -36,18 +36,18 @@ services:
       "
 
   suricata:
-  image: jasonish/suricata:latest
-  container_name: suricata
-  hostname: suricata
-  privileged: true
-  volumes:
-    - ./suricata.yaml:/etc/suricata/suricata.yaml:ro
-    - ./rules:/etc/suricata/rules:ro
-    - ./logs:/var/log/suricata
-  depends_on:
-    - victim
-    - attacker
-  command: suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3
+    image: jasonish/suricata:latest
+    container_name: suricata
+    hostname: suricata
+    privileged: true
+    volumes:
+      - ./suricata.yaml:/etc/suricata/suricata.yaml:ro
+      - ./rules:/etc/suricata/rules:ro
+      - ./logs:/var/log/suricata
+    depends_on:
+      - victim
+      - attacker
+    command: suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3
 
 
 networks:
