@@ -58,6 +58,9 @@ jobs:
             
             echo "Очистка завершена"
           EOF
+          ssh -i ~/.ssh/deploy_key ... "rm -rf ~/lab-infrastructure/rules/*"
+          scp -r rules/* ...
+
 
       - name: Copy files to server
         env:
@@ -78,6 +81,61 @@ jobs:
             -r rules/* \
             ${SSH_USER}@${SSH_HOST}:~/lab-infrastructure/rules/
 
+      - name: Install Suricata on host
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
+            echo "=== Установка Suricata на хост ==="
+            
+            # 1. Добавляем репозиторий Suricata
+            sudo apt-get update
+            sudo apt-get install -y software-properties-common
+            sudo add-apt-repository -y ppa:oisf/suricata-stable
+            sudo apt-get update
+            
+            # 2. Устанавливаем Suricata
+            sudo apt-get install -y suricata
+            
+            # 3. Копируем конфиги с артефактов деплоя
+            sudo cp ~/lab-infrastructure/suricata.yaml /etc/suricata/suricata.yaml
+            sudo mkdir -p /etc/suricata/rules
+            sudo cp ~/lab-infrastructure/rules/* /etc/suricata/rules/
+            
+            # 4. Создаём директорию для логов
+            sudo mkdir -p /var/log/suricata
+            sudo chown -R $USER:$USER /var/log/suricata
+            
+            # 5. Проверяем конфигурацию
+            sudo suricata -T -c /etc/suricata/suricata.yaml
+            
+            echo "Suricata установлена и проверена"
+          EOF
+
+      - name: Start Suricata as IPS on host
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
+            echo "=== Запуск Suricata в режиме IPS ==="
+            
+            # 1. Загружаем модуль NFQUEUE
+            sudo modprobe nfnetlink_queue
+            
+            # 2. Запускаем Suricata
+            sudo suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3 --pidfile /var/run/suricata.pid
+            
+            # 3. Проверяем статус
+            if pgrep suricata; then
+              echo "Suricata запущена (PID: $(pgrep suricata))"
+            else
+              echo "Ошибка: Suricata не запустилась!"
+              exit 1
+            fi
+          EOF
+
       - name: Deploy containers
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -85,36 +143,34 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
             cd ~/lab-infrastructure
-            
-            # Проверяем наличие файлов конфигурации
-            echo "=== Проверка файлов конфигурации ==="
-            ls -la suricata.yaml rules/ 2>/dev/null || echo "Файлы конфигурации не найдены"
-            echo ""
-            
+       
             # Запускаем новые контейнеры
-            echo "=== Запуск контейнеров ==="
             docker compose up -d --build
             
-            # Ждем запуска контейнеров
-            echo "Ожидание запуска контейнеров..."
             sleep 20
             
-            # Показываем статус всех контейнеров
-            echo "=== Статус всех контейнеров ==="
             docker compose ps
-            echo ""
-            
-            # Проверяем статус контейнера Suricata отдельно
-            echo "=== Детальная информация о контейнере Suricata ==="
-            docker inspect suricata 2>/dev/null | grep -A 5 '"State"' || echo "Контейнер suricata не найден"
-            echo ""
-            
-            # Проверяем логи запуска Suricata
-            echo "=== Логи запуска Suricata (первые 50 строк) ==="
-            docker logs suricata --tail=50 2>/dev/null || echo "Не удалось получить логи Suricata"
-            echo ""
-            
+                       
             echo "Деплой завершен!"
+          EOF
+
+      - name: Configure iptables for Suricata IPS
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
+            echo "=== Настройка iptables для Suricata ==="
+            
+            # Очищаем старые правила
+            sudo iptables -F DOCKER-USER
+            sudo iptables -X DOCKER-USER || true
+            sudo iptables -N DOCKER-USER
+
+            # Добавляем правило NFQUEUE
+            sudo iptables -A DOCKER-USER -j NFQUEUE --queue-num 0 --queue-bypass
+
+            echo "Правила iptables применены"
           EOF
 
       - name: Verify deployment
@@ -175,110 +231,19 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} << 'EOF'
             cd ~/lab-infrastructure
 
+
             echo "=== Тестирование защиты Suricata ==="
-            echo ""
+            sleep 15  # Ожидание старта
 
-            # Устанавливаем jq для форматирования JSON, если его нет
-            if ! command -v jq &> /dev/null; then
-              echo "Установка jq для форматирования JSON..."
-              sudo apt-get update -qq && sudo apt-get install -y -qq jq || echo "Не удалось установить jq, будет использован cat"
-            fi
-            echo ""
+            # Проверка логов
+            echo "Логи Suricata (последние 50 строк):"
+            sudo tail -n 50 /var/log/suricata/eve.json
 
-            # Ждем, чтобы Suricata успела полностью запуститься
-            echo "Ожидание полного запуска Suricata (15 секунд)..."
-            sleep 15
-            echo ""
-
-            # Устанавливаем ebtables (не обязательно для NFQ, но оставим на всякий случай)
-            echo "=== Установка ebtables (опционально) ==="
-            if ! command -v ebtables >/dev/null 2>&1; then
-              echo "Установка ebtables..."
-              sudo apt-get update -qq && sudo apt-get install -y -qq ebtables || echo "Не удалось установить ebtables"
-            fi
-
-            # === КРИТИЧЕСКИ ВАЖНЫЙ БЛОК: настройка iptables ТОЛЬКО через NFQUEUE ===
-            echo "=== Настройка iptables для Suricata IPS (только NFQUEUE) ==="
-            if [ -f setup-iptables.sh ]; then
-              echo "Запуск скрипта setup-iptables.sh..."
-              sudo bash setup-iptables.sh
-            else
-              echo "ОШИБКА: setup-iptables.sh не найден! Без него Suricata не получит пакеты."
-              echo "Проверьте, что файл скопирован в ~/lab-infrastructure/"
-              exit 1
-            fi
-            echo ""
-            sleep 2
-
-            # Очищаем старые логи перед тестом
-            echo "=== Очистка старых логов перед тестом ==="
-            if [ -f logs/eve.json ]; then
-              echo "" > logs/eve.json
-            fi
-            sleep 2
-            echo ""
-
-            # Тест 1: ICMP ping (должен быть заблокирован Suricata)
-            echo "=== Тест 1: ICMP ping на victim (должен быть заблокирован Suricata) ==="
-            echo "Выполняем ping с контейнера attacker на victim..."
-            docker exec attacker timeout 5 ping -c 3 victim 2>&1 || echo "Ping не получил ответа (ожидаемо при блокировке Suricata)"
-            echo ""
-            sleep 3
-
-            # Тест 2: HTTP запрос (должен пройти успешно)
-            echo "=== Тест 2: HTTP запрос на victim (должен пройти успешно) ==="
-            echo "Выполняем curl с контейнера attacker на victim..."
-            docker exec attacker curl -s http://victim || echo "HTTP запрос завершился с ошибкой"
-            echo ""
-            sleep 3
-
-            # Проверяем сетевую конфигурацию
-            echo "=== Сетевая конфигурация ==="
-            echo "IP адреса контейнеров:"
-            echo "  attacker: $(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' attacker 2>/dev/null || echo 'не найден')"
-            echo "  victim: $(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' victim 2>/dev/null || echo 'не найден')"
-            echo ""
-
-            echo "Проверка правил iptables:"
-            echo "Правила в DOCKER-USER:"
-            sudo iptables -L DOCKER-USER -n -v 2>/dev/null || echo "Цепочка DOCKER-USER не существует"
-            echo ""
-            echo "Правила в FORWARD:"
-            sudo iptables -L FORWARD -n -v 2>/dev/null | head -5 || echo "Не удалось получить правила FORWARD"
-            echo ""
-
-            # Диагностика Suricata
-            echo "=== Диагностика Suricata ==="
-            echo "Процесс Suricata:"
-            docker exec suricata ps aux | grep suricata | grep -v grep || echo "Процесс Suricata не найден"
-            echo ""
-            echo "Команда запуска Suricata:"
-            docker exec suricata cat /proc/$(docker exec suricata pgrep suricata | head -1)/cmdline 2>/dev/null | tr '\0' ' ' || echo "Не удалось получить команду"
-            echo ""
-
-            # Анализ логов
-            echo "=== Логи Suricata (eve.json) ==="
-            if [ -f logs/eve.json ]; then
-              echo "События 'drop' (блокировки):"
-              if command -v jq &> /dev/null; then
-                cat logs/eve.json | jq -R 'fromjson? | select(.event_type=="drop")' 2>/dev/null | jq -s '.' | jq '.[0:5]' || echo "Нет событий drop"
-              else
-                grep '"event_type":"drop"' logs/eve.json | head -5 || echo "Нет событий drop"
-              fi
-              echo ""
-              echo "HTTP события:"
-              if command -v jq &> /dev/null; then
-                cat logs/eve.json | jq -R 'fromjson? | select(.event_type=="http")' 2>/dev/null | jq -s '.' | jq '.[0:5]' || echo "Нет HTTP событий"
-              else
-                grep '"event_type":"http"' logs/eve.json | head -5 || echo "Нет HTTP событий"
-              fi
-            else
-              echo "Файл logs/eve.json не найден. Проверяем директорию:"
-              ls -la logs/ 2>/dev/null || echo "Директория логов недоступна"
-            fi
-            echo ""
-
-            echo "=== Тестирование завершено ==="
-            echo "✅ Если видите события 'drop' в логах — Suricata работает в IPS-режиме корректно!"
+            # Проверка блокировки ICMP
+            echo "Тест ICMP (должен быть заблокирован):"
+            docker exec attacker ping -c 3 victim
+            # Проверка HTTP
+            echo "Тест HTTP (должен пройти):"
+            docker exec attacker curl -s http://victim
           EOF
 

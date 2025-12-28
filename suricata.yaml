@@ -101,3 +101,10 @@ flow:
 stats:
   enabled: yes
   interval: 8
+
+af-packet:
+  - interface: docker0
+    threads: auto
+    defrag: yes
+    cluster-id: 99
+    cluster-type: cluster_flow
