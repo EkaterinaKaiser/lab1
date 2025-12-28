@@ -39,8 +39,15 @@ jobs:
               docker compose down -v 2>/dev/null || docker-compose down -v 2>/dev/null || true
               
               echo "Остановка Suricata..."
-              sudo pkill -f suricata || true
+              sudo pkill -9 -f suricata || true
+              sleep 3
+
               sudo rm -f /var/run/suricata.pid || true
+
+              if pgrep -f suricata; then
+                echo "Ошибка: Suricata всё ещё работает после pkill!"
+                exit 1
+              fi
 
               # Удаляем контейнеры по имени, если они все еще существуют
               docker rm -f attacker victim suricata 2>/dev/null || true
