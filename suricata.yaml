@@ -30,14 +30,17 @@ outputs:
       filename: eve.json
       types:
         - alert
-        - drop      # ⚠️ критично: логировать ЗАБЛОКИРОВАННЫЕ пакеты!
+        - drop
         - http
         - dns
         - tls
         - flow
-        - icmp
+        - fileinfo
+        - smtp
+        - ssh
+        - stats
       json:
-        pretty: no  # экономим место (в лабе можно yes)
+        pretty: no
       include-metadata: yes
       community-id: false
 
