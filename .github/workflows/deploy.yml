@@ -235,7 +235,7 @@ jobs:
           echo "=== Настройка iptables для Suricata IPS ==="
 
           # Получаем имя bridge-интерфейса
-          BRIDGE_NAME="br-$(docker network inspect labnet -f '{{.Id}}' | cut -c1-12)"
+          BRIDGE_NAME="br-$(docker network inspect lab-infrastructure_labnet -f '{{.Id}}' | cut -c1-12)"
           echo "Bridge: $BRIDGE_NAME"
 
           if ! ip link show "$BRIDGE_NAME" >/dev/null 2>&1; then
