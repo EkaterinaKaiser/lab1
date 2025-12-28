@@ -106,65 +106,55 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
-            set -e
-            echo "=== Запуск Suricata в режиме IPS (nfq) ==="
+          set -e
+          echo "=== Запуск Suricata в режиме IPS (nfq) ==="
 
-            # Загружаем модуль ядра
-            sudo modprobe nfnetlink_queue || echo "nfnetlink_queue уже загружен"
+          sudo modprobe nfnetlink_queue 2>/dev/null || true
+          sudo pkill -f "suricata.*-c /etc/suricata/suricata.yaml" 2>/dev/null || true
+          sleep 1
+          sudo rm -f /var/run/suricata.pid 2>/dev/null || true
 
-            # Убеждаемся, что Suricata остановлена
-            sudo pkill -f "suricata.*-c /etc/suricata/suricata.yaml" 2>/dev/null || true
-            sleep 2
+          echo "Запуск Suricata в фоне (полное отсоединение)..."
+          nohup sudo suricata \
+            -c /etc/suricata/suricata.yaml \
+            -q 0 \
+            --pidfile /var/run/suricata.pid \
+            --set logging.console.enabled=no \
+            > /var/log/suricata/startup.log 2>&1 < /dev/null &
+          
+          # Ждём PID-файла
+          for i in {1..15}; do
+            if [ -f /var/run/suricata.pid ]; then
+              PID=$(cat /var/run/suricata.pid)
+              echo "Suricata запущена (PID: $PID)"
+              break
+            fi
+            sleep 1
+          done
 
-            # Запускаем в фоне с PID-файлом
-            echo "Запуск Suricata..."
-            sudo suricata \
-              -c /etc/suricata/suricata.yaml \
-              -q 0 \
-              --pidfile /var/run/suricata.pid \
-              --set logging.console.enabled=yes \
-              --set logging.file.filename=/var/log/suricata/suricata.log \
-              &
+          if [ ! -f /var/run/suricata.pid ]; then
+            echo "❌ PID-файл не создан. Лог запуска:"
+            cat /var/log/suricata/startup.log 2>/dev/null || echo "(лог пуст)"
+            exit 1
+          fi
 
-            # Ждём появления PID-файла
-            for i in {1..10}; do
-              if [ -f /var/run/suricata.pid ]; then
-                SURICATA_PID=$(cat /var/run/suricata.pid)
-                echo "Suricata запущена (PID: $SURICATA_PID)"
-                break
+          # Ждём инициализации (теперь можно, т.к. Suricata в фоне)
+          timeout 20 bash -c '
+            while ! sudo grep -q "Engine started" /var/log/suricata/suricata.log 2>/dev/null; do
+              if ! kill -0 "$(cat /var/run/suricata.pid)" 2>/dev/null; then
+                echo "Suricata упала"
+                exit 1
               fi
-              sleep 1
+              sleep 0.5
             done
+          ' || {
+            echo "❌ Таймаут инициализации"
+            sudo tail -n 30 /var/log/suricata/suricata.log 2>/dev/null
+            exit 1
+          }
 
-            if [ ! -f /var/run/suricata.pid ]; then
-              echo "❌ Не создан PID-файл. Логи:"
-              sudo tail -n 30 /var/log/suricata/suricata.log 2>/dev/null || echo "Логи не найдены"
-              exit 1
-            fi
-
-            # Ждём инициализации ядра (до 30 сек)
-            echo "Ожидание инициализации Suricata..."
-            timeout 30s bash -c '
-              while true; do
-                if sudo grep -q "Engine started" /var/log/suricata/suricata.log 2>/dev/null; then
-                  echo "✅ Suricata инициализирована"
-                  exit 0
-                fi
-                sleep 1
-              done
-            ' || {
-              echo "❌ Таймаут инициализации. Последние логи:"
-              sudo tail -n 50 /var/log/suricata/suricata.log 2>/dev/null || echo "Логи не найдены"
-              exit 1
-            }
-
-            # Финальная проверка процесса
-            if kill -0 "$SURICATA_PID" 2>/dev/null; then
-              echo "✅ Suricata работает (PID: $SURICATA_PID)"
-            else
-              echo "❌ Процесс завершился"
-              exit 1
-            fi
+          echo "✅ Suricata работает (PID: $(cat /var/run/suricata.pid))"
+          exit 0
           EOF
 
       - name: Deploy containers
@@ -176,10 +166,8 @@ jobs:
             set -e
             cd ~/lab-infrastructure
 
-            # Создаём сеть отдельно (чтобы получить её ID для iptables)
             docker network create labnet 2>/dev/null || true
 
-            # Запускаем контейнеры
             docker compose up -d --build
 
             echo "Контейнеры запущены:"
