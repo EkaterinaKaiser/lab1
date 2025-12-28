@@ -56,6 +56,57 @@ jobs:
             echo "Очистка завершена"
           EOF
 
+      - name: Full Suricata & iptables Cleanup
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
+          set -e
+          echo "=== Полная очистка Suricata и iptables ==="
+
+          # 1. Убиваем ВСЕ процессы Suricata (не только по конфигу!)
+          echo "→ Остановка всех Suricata..."
+          sudo pkill -9 -f suricata 2>/dev/null || true
+          sleep 2
+
+          # 2. Удаляем PID и логи
+          echo "→ Удаление PID и логов..."
+          sudo rm -f /var/run/suricata.pid
+          sudo rm -rf /var/log/suricata/*
+          sudo mkdir -p /var/log/suricata
+
+          # 3. Удаляем конфиги и правила
+          echo "→ Удаление конфигов..."
+          sudo rm -f /etc/suricata/suricata.yaml
+          sudo rm -rf /etc/suricata/rules/*
+          sudo mkdir -p /etc/suricata/rules
+
+          # 4. Полная очистка iptables (удаляем ВСЁ, связанное с Suricata)
+          echo "→ Очистка iptables..."
+          # Удаляем ссылки
+          while sudo iptables -C DOCKER-USER -j PRE-SURICATA 2>/dev/null; do
+            sudo iptables -D DOCKER-USER -j PRE-SURICATA
+          done
+          # Очищаем и удаляем цепочку
+          sudo iptables -F PRE-SURICATA 2>/dev/null || true
+          sudo iptables -X PRE-SURICATA 2>/dev/null || true
+          # Восстанавливаем DOCKER-USER по умолчанию (если нужно)
+          sudo iptables -F DOCKER-USER 2>/dev/null || true
+          sudo iptables -X DOCKER-USER 2>/dev/null || true
+          sudo iptables -N DOCKER-USER 2>/dev/null || true
+
+          # 5. Сбрасываем nfqueue (принудительно освобождаем ядро)
+          echo "→ Сброс nfqueue..."
+          echo 0 | sudo tee /proc/sys/net/netfilter/nf_queue_maxlen 2>/dev/null || true
+          # Перезагружаем модуль (если возможно)
+          sudo rmmod nfnetlink_queue 2>/dev/null || true
+          sudo modprobe nfnetlink_queue 2>/dev/null || true
+
+          echo "✅ Очистка завершена"
+          exit 0
+          EOF
+
       - name: Copy files to server
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -109,12 +160,11 @@ jobs:
           set -e
           echo "=== Запуск Suricata в IPS-режиме ==="
 
-          sudo modprobe nfnetlink_queue 2>/dev/null || true
-          sudo pkill -f "suricata.*-c /etc/suricata/suricata.yaml" 2>/dev/null || true
-          sleep 1
+          sudo pkill -9 -f suricata 2>/dev/null || true
           sudo rm -f /var/run/suricata.pid 2>/dev/null || true
+          sleep 1
 
-          echo "Запуск Suricata (полное отсоединение)..."
+          echo "Запуск Suricata с принудительной загрузкой правил..."
           setsid nohup sudo -b sh -c '
             exec > /var/log/suricata/startup.log 2>&1
             exec sudo suricata \
@@ -122,37 +172,40 @@ jobs:
               -q 0 \
               --pidfile /var/run/suricata.pid \
               --set logging.console.enabled=no \
-              --set detect.reload-prules=true
+              --set detect.reload-prules=true \
+              --set detect.profiling-rules.enabled=yes
           ' </dev/null >/dev/null 2>&1 &
 
-          sleep 3
+          # Ждём PID и инициализацию
+          for i in {1..20}; do
+            if [ -f /var/run/suricata.pid ]; then
+              PID=$(cat /var/run/suricata.pid)
+              echo "PID: $PID"
+              break
+            fi
+            sleep 0.5
+          done
 
-          # Проверка PID
           if [ ! -f /var/run/suricata.pid ]; then
-            echo "❌ PID-файл не создан"
+            echo "❌ PID не создан"
             cat /var/log/suricata/startup.log 2>/dev/null || echo "(лог пуст)"
             exit 1
           fi
 
-          PID=$(cat /var/run/suricata.pid)
-          echo "PID: $PID"
-
-          # Ждём инициализации
+          # Ждём загрузки правил (появления alert/drop в логе)
           timeout 20 bash -c '
-            while ! sudo grep -q "Engine started" /var/log/suricata/suricata.log 2>/dev/null; do
-              if ! kill -0 "$PID" 2>/dev/null; then
-                echo "Suricata упала"
-                exit 1
-              fi
+            while ! sudo grep -q "rules successfully loaded" /var/log/suricata/suricata.log &&
+                  ! sudo grep -q "\"rules_loaded\":[1-9]" /var/log/suricata/eve.json 2>/dev/null; do
+              kill -0 "$PID" || exit 1
               sleep 0.5
             done
           ' || {
-            echo "❌ Таймаут инициализации"
+            echo "❌ Правила не загружены"
             sudo tail -n 50 /var/log/suricata/suricata.log
             exit 1
           }
 
-          echo "✅ Suricata запущена"
+          echo "✅ Suricata запущена и загрузила правила"
           exit 0
           EOF
 
