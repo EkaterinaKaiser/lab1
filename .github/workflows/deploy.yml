@@ -172,8 +172,7 @@ jobs:
               -c /etc/suricata/suricata.yaml \
               -q 0 \
               --pidfile /var/run/suricata.pid \
-              --set logging.console.enabled=no \
-              --set detect.profiling-rules.enabled=yes
+              --set logging.console.enabled=no
           ' </dev/null >/dev/null 2>&1 &
 
           # Ждём PID и инициализацию
