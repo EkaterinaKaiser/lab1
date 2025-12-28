@@ -38,16 +38,39 @@ jobs:
               echo "Остановка и удаление контейнеров..."
               docker compose down -v 2>/dev/null || docker-compose down -v 2>/dev/null || true
               
+              # Диагностика: какие процессы Suricata есть?
+              echo "--- Текущие процессы Suricata ---"
+              ps aux | grep -i suricata | grep -v grep
+              echo ""
+
+              # Проверка состояния процессов (Z, D и т.д.)
+              echo "--- Состояние процессов ---"
+              ps -e -o pid,ppid,stat,cmd | grep suricata
+              echo ""
+
+              # Принудительная остановка
               echo "Остановка Suricata..."
               sudo pkill -9 -f suricata || true
-              sleep 3
+              sleep 5
 
-              sudo rm -f /var/run/suricata.pid || true
-
+              # Повторная проверка
               if pgrep -f suricata; then
                 echo "Ошибка: Suricata всё ещё работает после pkill!"
-                exit 1
+                echo "Попытка убить через systemctl (если сервис установлен)..."
+                sudo systemctl stop suricata || true
+                sleep 5
               fi
+
+              # Финальная проверка
+              if pgrep -f suricata; then
+                echo "Критично: Suricata не остановлена! PID: $(pgrep -f suricata)"
+                exit 1
+              else
+                echo "Suricata успешно остановлена"
+              fi
+
+              # Удаление PID-файла
+              sudo rm -f /var/run/suricata.pid || true
 
               # Удаляем контейнеры по имени, если они все еще существуют
               docker rm -f attacker victim suricata 2>/dev/null || true
