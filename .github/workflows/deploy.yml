@@ -174,39 +174,6 @@ jobs:
             docker compose ps
           EOF
 
-      - name: Configure iptables to inspect inter-container traffic
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-        run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
-            set -e
-            echo "=== Настройка iptables для перехвата трафика attacker → victim ==="
-
-            # Очищаем DOCKER-USER
-            sudo iptables -F DOCKER-USER
-            sudo iptables -X PRE-SURICATA 2>/dev/null || true
-            sudo iptables -N PRE-SURICATA
-
-            # Правило: направлять трафик от attacker к victim в NFQUEUE
-            # Получаем IP-адреса контейнеров после запуска (временно — ставим заглушки)
-            # Но лучше — по MAC или имени, но для лабы используем сеть по умолчанию.
-
-            # Альтернатива: перехват ВСЕГО трафика в labnet (надёжнее)
-            echo "Добавляем правило для всей сети labnet..."
-
-            # Создаём цепочку для фильтрации по интерфейсу (docker создаёт veth-интерфейсы)
-            sudo iptables -A DOCKER-USER -j PRE-SURICATA
-
-            # Перехватываем трафик, проходящий через bridge (входящий/исходящий в контейнеры)
-            # Это работает, если сеть labnet — bridge (а она такая)
-            sudo iptables -A PRE-SURICATA -i br-$(docker network inspect labnet -f '{{.Id}}' | cut -c1-12) -j NFQUEUE --queue-num 0 --queue-bypass
-            sudo iptables -A PRE-SURICATA -o br-$(docker network inspect labnet -f '{{.Id}}' | cut -c1-12) -j NFQUEUE --queue-num 0 --queue-bypass
-
-            echo "✅ Правила iptables применены"
-            sudo iptables -L DOCKER-USER -n -v
-          EOF
-
       - name: Configure iptables for Suricata IPS
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -216,27 +183,34 @@ jobs:
           set -e
           echo "=== Настройка iptables для Suricata IPS ==="
 
-          # Получаем bridge-интерфейс
+          # Получаем имя bridge-интерфейса
           BRIDGE_NAME="br-$(docker network inspect labnet -f '{{.Id}}' | cut -c1-12)"
           echo "Bridge: $BRIDGE_NAME"
 
-          if ! ip link show "$BRIDGE_NAME" &>/dev/null; then
-            echo "❌ Bridge $BRIDGE_NAME не найден"
+          if ! ip link show "$BRIDGE_NAME" >/dev/null 2>&1; then
+            echo "❌ Bridge $BRIDGE_NAME не найден. Список:"
             ip -br link show type bridge
             exit 1
           fi
 
-          # --- Надёжная пересборка цепочки ---
+          # --- Безопасное создание цепочки: удаляем ВСЁ, что связано с PRE-SURICATA ---
           echo "Очистка старых правил..."
-          sudo iptables -D DOCKER-USER -j PRE-SURICATA 2>/dev/null || true
+
+          # Удаляем ссылки из DOCKER-USER (может быть несколько — удаляем в цикле)
+          while sudo iptables -C DOCKER-USER -j PRE-SURICATA 2>/dev/null; do
+            sudo iptables -D DOCKER-USER -j PRE-SURICATA
+          done
+
+          # Очищаем и удаляем цепочку, если существует
           sudo iptables -F PRE-SURICATA 2>/dev/null || true
           sudo iptables -X PRE-SURICATA 2>/dev/null || true
 
-          echo "Создание новой цепочки..."
+          # Создаём заново
+          echo "Создание цепочки PRE-SURICATA..."
           sudo iptables -N PRE-SURICATA
           sudo iptables -A DOCKER-USER -j PRE-SURICATA
 
-          # Правила для bridge
+          # Добавляем правила для bridge
           sudo iptables -A PRE-SURICATA -i "$BRIDGE_NAME" -j NFQUEUE --queue-num 0 --queue-bypass
           sudo iptables -A PRE-SURICATA -o "$BRIDGE_NAME" -j NFQUEUE --queue-num 0 --queue-bypass
 
