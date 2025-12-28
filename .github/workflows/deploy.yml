@@ -216,28 +216,31 @@ jobs:
           set -e
           echo "=== Настройка iptables для Suricata IPS ==="
 
-          # Получаем ID сети и имя bridge-интерфейса
-          NETWORK_ID=$(docker network inspect labnet -f '{{.Id}}')
-          BRIDGE_NAME="br-$(echo "$NETWORK_ID" | cut -c1-12)"
-          echo "Network ID: $NETWORK_ID"
-          echo "Bridge interface: $BRIDGE_NAME"
+          # Получаем bridge-интерфейс
+          BRIDGE_NAME="br-$(docker network inspect labnet -f '{{.Id}}' | cut -c1-12)"
+          echo "Bridge: $BRIDGE_NAME"
 
-          # Проверяем, существует ли интерфейс
           if ! ip link show "$BRIDGE_NAME" &>/dev/null; then
-            echo "❌ Bridge $BRIDGE_NAME не найден. Список bridge-интерфейсов:"
+            echo "❌ Bridge $BRIDGE_NAME не найден"
             ip -br link show type bridge
             exit 1
           fi
 
-          # Настройка iptables
-          sudo iptables -F DOCKER-USER 2>/dev/null || true
+          # --- Надёжная пересборка цепочки ---
+          echo "Очистка старых правил..."
+          sudo iptables -D DOCKER-USER -j PRE-SURICATA 2>/dev/null || true
+          sudo iptables -F PRE-SURICATA 2>/dev/null || true
           sudo iptables -X PRE-SURICATA 2>/dev/null || true
+
+          echo "Создание новой цепочки..."
           sudo iptables -N PRE-SURICATA
           sudo iptables -A DOCKER-USER -j PRE-SURICATA
+
+          # Правила для bridge
           sudo iptables -A PRE-SURICATA -i "$BRIDGE_NAME" -j NFQUEUE --queue-num 0 --queue-bypass
           sudo iptables -A PRE-SURICATA -o "$BRIDGE_NAME" -j NFQUEUE --queue-num 0 --queue-bypass
 
-          echo "✅ iptables настроены для $BRIDGE_NAME"
+          echo "✅ iptables настроены"
           sudo iptables -L DOCKER-USER -n -v
           exit 0
           EOF
