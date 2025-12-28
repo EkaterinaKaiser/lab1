@@ -58,9 +58,6 @@ jobs:
             
             echo "Очистка завершена"
           EOF
-          ssh -i ~/.ssh/deploy_key ... "rm -rf ~/lab-infrastructure/rules/*"
-          scp -r rules/* ...
-
 
       - name: Copy files to server
         env:
