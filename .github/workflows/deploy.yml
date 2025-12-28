@@ -156,7 +156,7 @@ jobs:
             sudo modprobe nfnetlink_queue
             
             # 2. Запускаем Suricata
-            sudo suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3 --pidfile /var/run/suricata.pid
+            sudo suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3 --pidfile /var/run/suricata.pid &
             
             # 3. Проверяем статус
             if pgrep suricata; then
