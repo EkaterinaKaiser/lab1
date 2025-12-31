@@ -21,7 +21,6 @@ nfq:
 # --- Правила ---
 default-rule-path: /etc/suricata/rules
 rule-files:
-  - suricata.rules
   - custom_ioc.rules
 
 # --- Вывод событий ---
