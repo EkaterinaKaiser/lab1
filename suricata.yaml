@@ -19,8 +19,10 @@ nfq:
   # repeat-mark/repeat-mask — не нужны при mode: accept
 
 # --- Правила ---
+default-rule-path: /etc/suricata/rules
 rule-files:
-  - /etc/suricata/rules/custom.rules
+  - suricata.rules
+  - custom_ioc.rules
 
 # --- Вывод событий ---
 outputs:
