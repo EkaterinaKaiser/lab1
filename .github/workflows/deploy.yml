@@ -179,6 +179,13 @@ jobs:
             echo "=== Обновление правил Suricata ==="
             cd ~/lab-infrastructure
 
+            # Убеждаемся, что suricata.yaml существует перед любыми операциями
+            if [ ! -f /etc/suricata/suricata.yaml ]; then
+              echo "[*] Копирование suricata.yaml в /etc/suricata/..."
+              sudo mkdir -p /etc/suricata/rules
+              sudo cp ~/lab-infrastructure/suricata.yaml /etc/suricata/suricata.yaml
+            fi
+
             # Обновляем индекс источников правил
             echo "[1/4] Обновление индекса источников..."
             sudo suricata-update update-sources || echo "⚠️ Не удалось обновить индекс (возможно, уже актуален)"
@@ -191,18 +198,25 @@ jobs:
 
             # Пробуем включить Positive Technologies rules
             echo "[3/4] Попытка включения PT Security rules..."
-            PT_SOURCE=$(sudo suricata-update list-sources 2>/dev/null | grep -i "pt" | head -1 | awk '{print $1}' || echo "")
-            if [ -n "$PT_SOURCE" ]; then
+            # Ищем PT source более аккуратно - берем только строки, которые не содержат "Subscription" и другие служебные строки
+            PT_SOURCE=$(sudo suricata-update list-sources 2>/dev/null | grep -iE "^[a-z0-9]+/[a-z0-9-]+.*pt" | head -1 | awk '{print $1}' || echo "")
+            if [ -n "$PT_SOURCE" ] && [ "$PT_SOURCE" != "Subscription:" ]; then
               if ! sudo suricata-update list-enabled-sources 2>/dev/null | grep -q "$PT_SOURCE"; then
                 sudo suricata-update enable-source "$PT_SOURCE" || echo "⚠️ Не удалось включить PT rules"
+              else
+                echo "ℹ️ PT source уже включен: $PT_SOURCE"
               fi
             else
               echo "ℹ️ PT Security source не найден в доступных источниках"
             fi
 
-            # Загружаем официальные правила
+            # Загружаем официальные правила (suricata.yaml уже должен быть на месте)
             echo "[4/4] Загрузка официальных правил..."
-            sudo suricata-update || echo "⚠️ Не удалось загрузить официальные правила"
+            sudo suricata-update || {
+              echo "⚠️ Не удалось загрузить официальные правила"
+              echo "Проверяем наличие suricata.yaml..."
+              ls -la /etc/suricata/suricata.yaml || echo "❌ suricata.yaml не найден!"
+            }
 
             # Загружаем IoC-фиды и генерируем кастомные правила
             echo "[*] Загрузка IoC-фидов..."

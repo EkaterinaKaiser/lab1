@@ -85,8 +85,11 @@ curl -s "https://antifilter.download/list/allyouneed.lst" | \
 
 # Zapret-info (реестр запрещенных ресурсов РФ)
 echo "[+] Downloading Zapret-info IPs..."
+# Формат dump.csv: IP;subnet;... - нужно извлечь IP и подсети правильно
 curl -s "https://github.com/zapret-info/z-i/raw/master/dump.csv" 2>/dev/null | \
-  cut -d';' -f1 | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u > "$FEEDS_DIR/zapret_ips.txt" || \
+  awk -F';' '{print $1; if ($2 != "" && $2 ~ /^[0-9]/) print $2}' | \
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | \
+  grep -vE '^[0-9]{4,}' | sort -u > "$FEEDS_DIR/zapret_ips.txt" || \
   echo "[!] Failed to download Zapret-info IPs"
 
 # Роскомсвобода (если доступен API)

@@ -96,6 +96,17 @@ def load_ips(path: Path):
             # Извлекаем IP или CIDR: поддерживаем CSV и простой список
             ip_raw = line.split(',')[0].split()[0] if ',' in line or ' ' in line else line
 
+            # Пропускаем строки, которые явно не являются IP (содержат числа > 255)
+            if '.' in ip_raw:
+                parts = ip_raw.split('.')
+                if len(parts) == 4:
+                    try:
+                        # Проверяем, что все части числа <= 255
+                        if any(int(p) > 255 for p in parts if p.isdigit()):
+                            continue
+                    except (ValueError, AttributeError):
+                        pass
+            
             try:
                 # Пробуем как IPv4 адрес
                 ip_obj = ipaddress.IPv4Address(ip_raw)
@@ -104,9 +115,21 @@ def load_ips(path: Path):
                 try:
                     # Пробуем как CIDR
                     network = ipaddress.IPv4Network(ip_raw, strict=False)
-                    ips.add(str(network))
+                    # Дополнительная проверка: все октеты должны быть <= 255
+                    if '/' in ip_raw:
+                        ip_part = ip_raw.split('/')[0]
+                        if '.' in ip_part:
+                            parts = ip_part.split('.')
+                            if len(parts) == 4 and all(p.isdigit() and int(p) <= 255 for p in parts):
+                                ips.add(str(network))
+                            else:
+                                continue
+                        else:
+                            ips.add(str(network))
+                    else:
+                        ips.add(str(network))
                 except (ipaddress.AddressValueError, ValueError):
-                    print(f"[!] WARNING: Invalid IP/CIDR '{ip_raw}' in {path}:{line_num}, skipping")
+                    # Не логируем каждую ошибку, чтобы не засорять вывод
                     continue
 
     return list(ips)
