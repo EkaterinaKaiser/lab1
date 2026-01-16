@@ -455,6 +455,9 @@ jobs:
             fi
 
             echo "→ Тест HTTP (ожидается разрешение):"
+            # Ждем, пока HTTP сервер точно запустится
+            sleep 2
+            # Проверяем доступность HTTP сервера
             if docker exec attacker timeout 5 curl -s --connect-timeout 3 http://victim &>/dev/null; then
               echo "✅ HTTP прошёл"
               echo "→ Проверяем, было ли событие в Suricata (должно быть, если правило есть):"
@@ -462,8 +465,18 @@ jobs:
                 echo "⚠️ ICMP-событие зафиксировано (ожидаемо)"
               fi
             else
-              echo "❌ HTTP не прошёл — возможно, Suricata слишком строгая или victim недоступен"
-              docker exec victim ps aux | head -5 || echo "Victim: сервис не запущен?"
+              echo "❌ HTTP не прошёл"
+              echo "→ Диагностика:"
+              echo "  Проверка статуса victim контейнера:"
+              docker exec victim ps aux | grep -E "python|http.server" || echo "  HTTP сервер не найден в процессах"
+              echo "  Проверка доступности порта 80:"
+              docker exec attacker timeout 2 nc -zv victim 80 2>&1 || echo "  Порт 80 недоступен"
+              echo "  Последние события Suricata (HTTP/drop):"
+              sudo tail -n 30 /var/log/suricata/eve.json 2>/dev/null | grep -E '"http"|"drop"|"alert"' | tail -5 | jq -r '.event_type, .alert.signature, .src_ip, .dest_ip' 2>/dev/null || echo "  Нет событий HTTP/drop"
+              echo "  Проверка правил pass для HTTP:"
+              sudo grep -E "^pass.*http|^pass.*80" /etc/suricata/rules/custom_ioc.rules 2>/dev/null | head -3 || echo "  Правила pass не найдены"
+              echo "  Проверка правил drop для HTTP:"
+              sudo grep -E "^drop.*http|^drop.*80" /etc/suricata/rules/custom_ioc.rules 2>/dev/null | head -3 || echo "  Правила drop для HTTP не найдены"
               exit 1
             fi
 

@@ -21,8 +21,8 @@ nfq:
 # --- Правила ---
 default-rule-path: /etc/suricata/rules
 rule-files:
+  - custom_ioc.rules  # Кастомные правила из IoC-источников (с правилами pass для HTTP)
   - suricata.rules  # Официальные правила (ET Open, PT Security и др.) - создается suricata-update
-  - custom_ioc.rules  # Кастомные правила из IoC-источников
 
 # --- Вывод событий ---
 outputs:

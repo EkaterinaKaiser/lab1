@@ -278,17 +278,22 @@ def main():
         
         # Добавляем разрешающие правила для HTTP/HTTPS в начало (высокий приоритет)
         # Эти правила должны быть ПЕРЕД блокирующими правилами drop
-        # Используем pass для HTTP трафика внутри HOME_NET
-        f.write("# Allow HTTP/HTTPS traffic (high priority - before drop rules)\n")
-        f.write("# Allow HTTP traffic to HOME_NET from any source\n")
+        # В Suricata правила обрабатываются по порядку, pass останавливает дальнейшую проверку
+        f.write("# ============================================\n")
+        f.write("# ALLOW RULES (HIGH PRIORITY - PROCESSED FIRST)\n")
+        f.write("# ============================================\n")
+        f.write("# Allow HTTP/HTTPS traffic to HOME_NET from any source\n")
         f.write("pass http any any -> $HOME_NET any (msg:\"Allow HTTP traffic to HOME_NET\"; sid:8000001; rev:1;)\n")
         f.write("pass tcp any any -> $HOME_NET 80 (msg:\"Allow HTTP on port 80\"; sid:8000002; rev:1;)\n")
         f.write("pass tcp any any -> $HOME_NET 443 (msg:\"Allow HTTPS on port 443\"; sid:8000003; rev:1;)\n")
-        f.write("# Allow traffic within HOME_NET (Docker containers communication)\n")
+        f.write("# Allow all traffic within HOME_NET (Docker containers communication)\n")
         f.write("pass ip $HOME_NET any -> $HOME_NET any (msg:\"Allow traffic within HOME_NET\"; sid:8000004; rev:1;)\n")
+        f.write("# Allow TCP traffic to HOME_NET (for HTTP and other services)\n")
+        f.write("pass tcp any any -> $HOME_NET any (msg:\"Allow TCP traffic to HOME_NET\"; sid:8000005; rev:1;)\n")
         f.write("\n")
-        f.write("# IoC-based blocking rules (applied after allow rules)\n")
-        f.write("# These rules block traffic TO/FROM blocked IPs\n")
+        f.write("# ============================================\n")
+        f.write("# BLOCKING RULES (IoC-based, processed after allow rules)\n")
+        f.write("# ============================================\n")
         f.write("\n")
         f.writelines(all_rules)
 
