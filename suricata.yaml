@@ -1,34 +1,24 @@
 %YAML 1.1
 ---
-# Suricata конфигурация для IPS-режима на хосте (через NFQUEUE)
-# Используется с: suricata -c suricata.yaml -q 0
-
 runmodes:
   - runmode: workers
 
 vars:
   address-groups:
-    # Покрываем все стандартные Docker-сети (172.16.0.0/12)
     HOME_NET: "[172.16.0.0/12]"
     EXTERNAL_NET: "any"
     HTTP_SERVERS: "$HOME_NET"
   port-groups:
     HTTP_PORTS: "80,443,8080,8443,8000,8888,8880"
 
-# --- NFQUEUE: главный драйвер для IPS ---
 nfq:
   mode: accept
-  # bypass: false  # по умолчанию
-  # repeat-mark/repeat-mask — не нужны при mode: accept
 
-# --- Правила ---
 default-rule-path: /etc/suricata/rules
 rule-files:
-  - custom_ioc.rules  # Кастомные правила из IoC-источников (с правилами pass для HTTP - должны быть первыми!)
-  - custom.rules  # Базовые правила (блокировка ICMP)
-  - suricata.rules  # Официальные правила (ET Open, PT Security и др.) - создается suricata-update
-
-# --- Вывод событий ---
+  - custom_ioc.rules
+  - custom.rules
+  - suricata.rules
 outputs:
   - eve-log:
       enabled: yes
@@ -49,7 +39,6 @@ outputs:
 classification-file: /etc/suricata/classification.config
 reference-config-file: /etc/suricata/reference.config
 
-# --- Анализ прикладного уровня ---
 app-layer:
   protocols:
     http:
@@ -59,7 +48,6 @@ app-layer:
     tls:
       enabled: yes
 
-# --- Логирование ---
 logging:
   default-log-format: "[%i] %t - (%f:%l) <%d> (%n) -- "
   outputs:
@@ -71,21 +59,18 @@ logging:
         level: info
         filename: suricata.log
 
-# --- Детекция ---
 detect:
   profile: medium
   custom-values:
     toclient-groups: 100
     toserver-groups: 100
 
-# --- Потоки ---
 flow:
   memcap: 134217728
   hash-size: 65536
   prealloc: 10000
   emergency-recovery: 30
 
-# --- Статистика ---
 stats:
   enabled: yes
   interval: 8

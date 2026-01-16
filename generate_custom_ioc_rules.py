@@ -27,7 +27,6 @@ SOURCES = {
         "msg_prefix": "[IPS] Botvrij.eu IoC",
         "classtype": "trojan-activity"
     },
-    # Публичные сервисы (Cloud Providers)
     "google_cloud": {
         "file": "google_cloud_ips.txt",
         "base_sid": 9300000,
@@ -58,7 +57,6 @@ SOURCES = {
         "msg_prefix": "[IPS] DigitalOcean IP",
         "classtype": "policy-violation"
     },
-    # Ресурсы, запрещенные в РФ
     "antifilter": {
         "file": "antifilter_ips.txt",
         "base_sid": 9800000,
@@ -93,29 +91,23 @@ def load_ips(path: Path):
             if not line or line.startswith("#"):
                 continue
 
-            # Извлекаем IP или CIDR: поддерживаем CSV и простой список
             ip_raw = line.split(',')[0].split()[0] if ',' in line or ' ' in line else line
 
-            # Пропускаем строки, которые явно не являются IP (содержат числа > 255)
             if '.' in ip_raw:
                 parts = ip_raw.split('.')
                 if len(parts) == 4:
                     try:
-                        # Проверяем, что все части числа <= 255
                         if any(int(p) > 255 for p in parts if p.isdigit()):
                             continue
                     except (ValueError, AttributeError):
                         pass
             
             try:
-                # Пробуем как IPv4 адрес
                 ip_obj = ipaddress.IPv4Address(ip_raw)
                 ips.add(str(ip_obj))
             except ipaddress.AddressValueError:
                 try:
-                    # Пробуем как CIDR
                     network = ipaddress.IPv4Network(ip_raw, strict=False)
-                    # Дополнительная проверка: все октеты должны быть <= 255
                     if '/' in ip_raw:
                         ip_part = ip_raw.split('/')[0]
                         if '.' in ip_part:
@@ -129,26 +121,18 @@ def load_ips(path: Path):
                     else:
                         ips.add(str(network))
                 except (ipaddress.AddressValueError, ValueError):
-                    # Не логируем каждую ошибку, чтобы не засорять вывод
                     continue
 
     return list(ips)
 
 
 def generate_drop_rules(source_name, config, ips):
-    """Генерация drop-правил для списка IP/CIDR
-    Блокируем трафик ОТ заблокированных IP к HOME_NET
-    (для блокировки вредоносных источников)
-    НО: не блокируем трафик ОТ HOME_NET (внутренние контейнеры)
-    """
+    """Генерация drop-правил для списка IP/CIDR"""
     rules = []
     sid = config["base_sid"]
-    max_rules = 1000  # Ограничение для предотвращения перегрузки
+    max_rules = 1000
 
     for ip_or_cidr in ips[:max_rules]:
-        # Блокируем трафик ОТ заблокированных IP к HOME_NET
-        # Это блокирует вредоносные источники от доступа к нашей сети
-        # Правила pass для HOME_NET обрабатываются первыми, поэтому внутренний трафик не блокируется
         rule = (
             f'drop ip {ip_or_cidr} any -> $HOME_NET any '
             f'(msg:"{config["msg_prefix"]} {ip_or_cidr} -> HOME_NET"; '
@@ -163,15 +147,12 @@ def generate_drop_rules(source_name, config, ips):
 
 def add_to_yaml_config(rules_file: Path):
     """Добавление custom_ioc.rules в suricata.yaml, если его там нет"""
-    # Пробуем найти suricata.yaml в разных местах
     script_dir = Path(__file__).parent
     yaml_file = None
     
-    # 1. В текущей директории (для локальной разработки)
     local_yaml = script_dir / "suricata.yaml"
     if local_yaml.exists():
         yaml_file = local_yaml
-    # 2. В /etc/suricata/suricata.yaml (для production)
     elif Path("/etc/suricata/suricata.yaml").exists():
         yaml_file = Path("/etc/suricata/suricata.yaml")
     
@@ -278,26 +259,13 @@ def main():
             f.write(f"# - {source}: {count} rules\n")
         f.write(f"\n")
         
-        # Добавляем разрешающие правила для HTTP/HTTPS в начало (высокий приоритет)
-        # Эти правила должны быть ПЕРЕД блокирующими правилами drop
-        # В Suricata правила обрабатываются по порядку, pass останавливает дальнейшую проверку
-        f.write("# ============================================\n")
-        f.write("# ALLOW RULES (HIGH PRIORITY - PROCESSED FIRST)\n")
-        f.write("# ============================================\n")
-        f.write("# Allow HTTP/HTTPS traffic to HOME_NET from any source\n")
+        f.write("# Allow rules (processed first)\n")
         f.write("pass http any any -> $HOME_NET any (msg:\"Allow HTTP traffic to HOME_NET\"; sid:8000001; rev:1;)\n")
         f.write("pass tcp any any -> $HOME_NET 80 (msg:\"Allow HTTP on port 80\"; sid:8000002; rev:1;)\n")
         f.write("pass tcp any any -> $HOME_NET 443 (msg:\"Allow HTTPS on port 443\"; sid:8000003; rev:1;)\n")
-        f.write("# Allow TCP traffic to HOME_NET (for HTTP and other services)\n")
         f.write("pass tcp any any -> $HOME_NET any (msg:\"Allow TCP traffic to HOME_NET\"; sid:8000005; rev:1;)\n")
-        f.write("# Allow UDP traffic to HOME_NET (for DNS and other services)\n")
         f.write("pass udp any any -> $HOME_NET any (msg:\"Allow UDP traffic to HOME_NET\"; sid:8000006; rev:1;)\n")
-        f.write("# NOTE: ICMP is NOT allowed here - it should be blocked by custom.rules\n")
-        f.write("\n")
-        f.write("# ============================================\n")
-        f.write("# BLOCKING RULES (IoC-based, processed after allow rules)\n")
-        f.write("# ============================================\n")
-        f.write("\n")
+        f.write("\n# Blocking rules (IoC-based)\n\n")
         f.writelines(all_rules)
 
     print(f"\n[+] Total: Generated {len(all_rules)} rules into {out_file}")

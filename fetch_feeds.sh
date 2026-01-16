@@ -1,33 +1,24 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# Не используем -e, чтобы скрипт продолжал работу при ошибках отдельных источников
 
-# Скрипт для загрузки IoC-фидов из различных источников
 FEEDS_DIR="feeds"
 mkdir -p "$FEEDS_DIR"
 
 echo "[*] Fetching IoC feeds..."
 
-# 1. Feodo Tracker (botnet C&C серверы)
 echo "[+] Downloading Feodo Tracker IPs..."
 curl -s "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt" \
   -o "$FEEDS_DIR/feodo_ips.txt" || echo "[!] Failed to download Feodo Tracker"
 
-# 2. URLhaus (malware URLs и IPs)
 echo "[+] Downloading URLhaus IPs..."
 curl -s "https://urlhaus.abuse.ch/downloads/csv_recent/" | \
   grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u > "$FEEDS_DIR/urlhaus_ips.txt" || \
   echo "[!] Failed to download URLhaus"
 
-# 3. Botvrij.eu (IoC список)
 echo "[+] Downloading Botvrij.eu IPs..."
 curl -s "https://www.botvrij.eu/data/ioclist.ip-src" \
   -o "$FEEDS_DIR/botvrij_ips.txt" || echo "[!] Failed to download Botvrij.eu"
 
-# 4. Cloud Providers IP ranges (Google Cloud, AWS, Azure, Cloudflare, DigitalOcean, Facebook, Twitter)
-echo "[+] Downloading Cloud Providers IP ranges..."
-
-# Google Cloud
 echo "[+] Downloading Google Cloud IPs..."
 if command -v jq >/dev/null 2>&1; then
   curl -s "https://www.gstatic.com/ipranges/cloud.json" | \
@@ -39,7 +30,6 @@ else
     echo "[!] Failed to download Google Cloud IPs (jq not installed)"
 fi
 
-# AWS
 echo "[+] Downloading AWS IPs..."
 if command -v jq >/dev/null 2>&1; then
   curl -s "https://ip-ranges.amazonaws.com/ip-ranges.json" | \
@@ -51,7 +41,6 @@ else
     echo "[!] Failed to download AWS IPs (jq not installed)"
 fi
 
-# Azure - используем альтернативный источник
 echo "[+] Downloading Azure IPs..."
 curl -s "https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519" 2>/dev/null | \
   grep -oE 'https://download\.microsoft\.com[^"]*\.json' | head -1 | \
@@ -59,12 +48,10 @@ curl -s "https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519" 2>
   grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' | sort -u > "$FEEDS_DIR/azure_ips.txt" 2>/dev/null || \
   echo "[!] Failed to download Azure IPs"
 
-# Cloudflare
 echo "[+] Downloading Cloudflare IPs..."
 curl -s "https://www.cloudflare.com/ips-v4" > "$FEEDS_DIR/cloudflare_ips.txt" 2>/dev/null || \
   echo "[!] Failed to download Cloudflare IPs"
 
-# DigitalOcean - используем GitHub источник
 echo "[+] Downloading DigitalOcean IPs..."
 curl -s "https://raw.githubusercontent.com/digitalocean/do_user_scripts/master/Utility/do-ip-ranges.sh" 2>/dev/null | \
   grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' | sort -u > "$FEEDS_DIR/digitalocean_ips.txt" 2>/dev/null || \
@@ -72,10 +59,6 @@ curl -s "https://raw.githubusercontent.com/digitalocean/do_user_scripts/master/U
   cut -d',' -f1 | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}' > "$FEEDS_DIR/digitalocean_ips.txt" 2>/dev/null || \
   echo "[!] Failed to download DigitalOcean IPs"
 
-# 5. Ресурсы, запрещенные в РФ
-echo "[+] Downloading Russian blocked resources..."
-
-# Antifilter
 echo "[+] Downloading Antifilter IPs..."
 curl -s "https://antifilter.download/list/allyouneed.lst" | \
   grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u > "$FEEDS_DIR/antifilter_ips.txt" 2>/dev/null || \
@@ -83,16 +66,13 @@ curl -s "https://antifilter.download/list/allyouneed.lst" | \
   grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u > "$FEEDS_DIR/antifilter_ips.txt" 2>/dev/null || \
   echo "[!] Failed to download Antifilter IPs"
 
-# Zapret-info (реестр запрещенных ресурсов РФ)
 echo "[+] Downloading Zapret-info IPs..."
-# Формат dump.csv: IP;subnet;... - нужно извлечь IP и подсети правильно
 curl -s "https://github.com/zapret-info/z-i/raw/master/dump.csv" 2>/dev/null | \
   awk -F';' '{print $1; if ($2 != "" && $2 ~ /^[0-9]/) print $2}' | \
   grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | \
   grep -vE '^[0-9]{4,}' | sort -u > "$FEEDS_DIR/zapret_ips.txt" || \
   echo "[!] Failed to download Zapret-info IPs"
 
-# Роскомсвобода (если доступен API)
 echo "[+] Downloading Роскомсвобода IPs..."
 if command -v jq >/dev/null 2>&1; then
   curl -s "https://reestr.rublacklist.net/api/v2/ips/json/" 2>/dev/null | \
