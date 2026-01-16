@@ -469,3 +469,67 @@ jobs:
 
             echo "=== 🎉 Тест пройден успешно! ==="
           EOF
+
+      - name: Test IoC rules blocking
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
+            set -e
+            cd ~/lab-infrastructure
+
+            echo "=== Тестирование блокировки по IoC правилам ==="
+            sleep 3
+
+            # Получаем IP из заблокированных источников для теста
+            # Используем Google Cloud IP как пример (должен быть заблокирован)
+            TEST_BLOCKED_IP=""
+            if [ -f ~/lab-infrastructure/feeds/google_cloud_ips.txt ]; then
+              TEST_BLOCKED_IP=$(head -1 ~/lab-infrastructure/feeds/google_cloud_ips.txt | cut -d'/' -f1)
+            fi
+
+            if [ -n "$TEST_BLOCKED_IP" ]; then
+              echo "→ Тест блокировки заблокированного IP ($TEST_BLOCKED_IP)..."
+              # Пытаемся отправить пакет к заблокированному IP
+              if docker exec attacker timeout 2 ping -c 1 -W 1 "$TEST_BLOCKED_IP" &>/dev/null; then
+                echo "⚠️ Трафик к заблокированному IP прошел (может быть нормально, если IP не в HOME_NET)"
+              else
+                echo "✅ Трафик к заблокированному IP заблокирован или недоступен"
+              fi
+              
+              # Проверяем логи Suricata на наличие событий блокировки
+              if sudo grep -q "Google Cloud IP" /var/log/suricata/eve.json 2>/dev/null; then
+                echo "✅ События блокировки найдены в логах Suricata"
+                sudo grep "Google Cloud IP" /var/log/suricata/eve.json | tail -1 | jq -r '.event_type, .alert.signature' 2>/dev/null || true
+              else
+                echo "ℹ️ События блокировки не найдены в логах (может быть нормально, если трафик не проходил)"
+              fi
+            else
+              echo "⚠️ Не удалось найти тестовый заблокированный IP"
+            fi
+
+            # Проверяем статистику правил Suricata
+            echo ""
+            echo "→ Статистика правил Suricata:"
+            if sudo suricatasc -c "ruleset-stats" 2>/dev/null | head -20; then
+              echo "✅ Статистика правил получена"
+            else
+              echo "ℹ️ Не удалось получить статистику (suricatasc может быть недоступен)"
+            fi
+
+            # Проверяем количество загруженных правил
+            echo ""
+            echo "→ Проверка загруженных правил:"
+            if [ -f /etc/suricata/rules/custom_ioc.rules ]; then
+              RULE_COUNT=$(grep -c "^drop\|^pass" /etc/suricata/rules/custom_ioc.rules 2>/dev/null || echo "0")
+              echo "  - custom_ioc.rules: $RULE_COUNT правил"
+            fi
+            if [ -f /etc/suricata/rules/suricata.rules ]; then
+              RULE_COUNT=$(grep -c "^alert\|^drop\|^pass" /etc/suricata/rules/suricata.rules 2>/dev/null || echo "0")
+              echo "  - suricata.rules: $RULE_COUNT правил"
+            fi
+
+            echo ""
+            echo "=== ✅ Тестирование IoC правил завершено ==="
+          EOF

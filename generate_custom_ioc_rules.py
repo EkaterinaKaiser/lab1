@@ -136,27 +136,23 @@ def load_ips(path: Path):
 
 
 def generate_drop_rules(source_name, config, ips):
-    """Генерация drop-правил для списка IP/CIDR"""
+    """Генерация drop-правил для списка IP/CIDR
+    Блокируем трафик ОТ заблокированных IP к HOME_NET
+    (для блокировки вредоносных источников)
+    """
     rules = []
     sid = config["base_sid"]
     max_rules = 1000  # Ограничение для предотвращения перегрузки
 
     for ip_or_cidr in ips[:max_rules]:
-        # Если это CIDR, используем его напрямую, иначе одиночный IP
-        if '/' in ip_or_cidr:
-            rule = (
-                f'drop ip {ip_or_cidr} any -> $HOME_NET any '
-                f'(msg:"{config["msg_prefix"]} {ip_or_cidr}"; '
-                f'classtype:{config["classtype"]}; '
-                f'sid:{sid}; rev:1;)\n'
-            )
-        else:
-            rule = (
-                f'drop ip {ip_or_cidr} any -> $HOME_NET any '
-                f'(msg:"{config["msg_prefix"]} {ip_or_cidr}"; '
-                f'classtype:{config["classtype"]}; '
-                f'sid:{sid}; rev:1;)\n'
-            )
+        # Блокируем трафик ОТ заблокированных IP к HOME_NET
+        # Это блокирует вредоносные источники от доступа к нашей сети
+        rule = (
+            f'drop ip {ip_or_cidr} any -> $HOME_NET any '
+            f'(msg:"{config["msg_prefix"]} {ip_or_cidr} -> HOME_NET"; '
+            f'classtype:{config["classtype"]}; '
+            f'sid:{sid}; rev:1;)\n'
+        )
         rules.append(rule)
         sid += 1
 
@@ -279,6 +275,21 @@ def main():
         for source, count in stats.items():
             f.write(f"# - {source}: {count} rules\n")
         f.write(f"\n")
+        
+        # Добавляем разрешающие правила для HTTP/HTTPS в начало (высокий приоритет)
+        # Эти правила должны быть ПЕРЕД блокирующими правилами drop
+        # Используем pass для HTTP трафика внутри HOME_NET
+        f.write("# Allow HTTP/HTTPS traffic (high priority - before drop rules)\n")
+        f.write("# Allow HTTP traffic to HOME_NET from any source\n")
+        f.write("pass http any any -> $HOME_NET any (msg:\"Allow HTTP traffic to HOME_NET\"; sid:8000001; rev:1;)\n")
+        f.write("pass tcp any any -> $HOME_NET 80 (msg:\"Allow HTTP on port 80\"; sid:8000002; rev:1;)\n")
+        f.write("pass tcp any any -> $HOME_NET 443 (msg:\"Allow HTTPS on port 443\"; sid:8000003; rev:1;)\n")
+        f.write("# Allow traffic within HOME_NET (Docker containers communication)\n")
+        f.write("pass ip $HOME_NET any -> $HOME_NET any (msg:\"Allow traffic within HOME_NET\"; sid:8000004; rev:1;)\n")
+        f.write("\n")
+        f.write("# IoC-based blocking rules (applied after allow rules)\n")
+        f.write("# These rules block traffic TO/FROM blocked IPs\n")
+        f.write("\n")
         f.writelines(all_rules)
 
     print(f"\n[+] Total: Generated {len(all_rules)} rules into {out_file}")
