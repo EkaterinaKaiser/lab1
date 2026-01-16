@@ -350,6 +350,24 @@ jobs:
 
             echo "Контейнеры запущены:"
             docker compose ps
+            
+            # Ждем, пока контейнеры полностью инициализируются
+            echo "Ожидание инициализации контейнеров..."
+            sleep 10
+            
+            # Проверяем, что HTTP сервер запустился
+            echo "Проверка готовности HTTP сервера..."
+            for i in {1..30}; do
+              if docker exec victim ps aux 2>/dev/null | grep -q "http.server"; then
+                echo "HTTP сервер запущен (попытка $i/30)"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "⚠️ HTTP сервер не запустился за 30 секунд"
+                docker exec victim ps aux | head -10
+              fi
+              sleep 1
+            done
           EOF
 
       - name: Configure iptables for Suricata IPS
@@ -479,8 +497,21 @@ jobs:
             fi
 
             echo "→ Тест HTTP (ожидается разрешение):"
-            # Ждем, пока HTTP сервер точно запустится
-            sleep 2
+            # Ждем, пока HTTP сервер точно запустится (контейнер может еще устанавливать пакеты)
+            echo "  Ожидание запуска HTTP сервера..."
+            for i in {1..30}; do
+              if docker exec victim ps aux 2>/dev/null | grep -q "http.server"; then
+                echo "  HTTP сервер запущен (попытка $i/30)"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "  ⚠️ HTTP сервер не запустился за 30 секунд"
+                docker exec victim ps aux | head -10
+              fi
+              sleep 1
+            done
+            sleep 2  # Дополнительная пауза для полной инициализации
+            
             # Проверяем доступность HTTP сервера
             if docker exec attacker timeout 5 curl -s --connect-timeout 3 http://victim &>/dev/null; then
               echo "✅ HTTP прошёл"
@@ -498,9 +529,21 @@ jobs:
               echo "  Последние события Suricata (HTTP/drop):"
               sudo tail -n 50 /var/log/suricata/eve.json 2>/dev/null | grep -E '"http"|"drop"|"alert"' | tail -10 | jq -r 'select(.event_type=="drop" or .event_type=="alert") | "\(.event_type) | src:\(.src_ip // "N/A") | dst:\(.dest_ip // "N/A") | sig:\(.alert.signature // "N/A")"' 2>/dev/null || echo "  Нет событий HTTP/drop"
               echo "  IP адрес attacker контейнера:"
-              docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks.labnet.IPAddress' || docker inspect attacker 2>/dev/null | grep -i ipaddress || echo "  Не удалось определить IP"
+              ATTACKER_IP=$(docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks.labnet.IPAddress // .[0].NetworkSettings.Networks.lab-infrastructure_labnet.IPAddress // empty')
+              if [ -n "$ATTACKER_IP" ]; then
+                echo "  $ATTACKER_IP"
+              else
+                docker inspect attacker 2>/dev/null | grep -i ipaddress | head -1 || echo "  Не удалось определить IP"
+              fi
               echo "  IP адрес victim контейнера:"
-              docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks.labnet.IPAddress' || docker inspect victim 2>/dev/null | grep -i ipaddress || echo "  Не удалось определить IP"
+              VICTIM_IP=$(docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks.labnet.IPAddress // .[0].NetworkSettings.Networks.lab-infrastructure_labnet.IPAddress // empty')
+              if [ -n "$VICTIM_IP" ]; then
+                echo "  $VICTIM_IP"
+              else
+                docker inspect victim 2>/dev/null | grep -i ipaddress | head -1 || echo "  Не удалось определить IP"
+              fi
+              echo "  Попытка прямого подключения к victim:"
+              docker exec attacker timeout 3 curl -v http://victim 2>&1 | head -20 || echo "  Подключение не удалось"
               echo "  Проверка правил pass для HTTP:"
               sudo grep -E "^pass.*http|^pass.*80" /etc/suricata/rules/custom_ioc.rules 2>/dev/null | head -3 || echo "  Правила pass не найдены"
               echo "  Проверка правил drop для HTTP:"

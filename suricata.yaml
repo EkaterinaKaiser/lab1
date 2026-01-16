@@ -11,6 +11,9 @@ vars:
     # Покрываем все стандартные Docker-сети (172.16.0.0/12)
     HOME_NET: "[172.16.0.0/12]"
     EXTERNAL_NET: "any"
+    HTTP_SERVERS: "$HOME_NET"
+  port-groups:
+    HTTP_PORTS: "80,443,8080,8443,8000,8888,8880"
 
 # --- NFQUEUE: главный драйвер для IPS ---
 nfq:
