@@ -139,6 +139,7 @@ def generate_drop_rules(source_name, config, ips):
     """Генерация drop-правил для списка IP/CIDR
     Блокируем трафик ОТ заблокированных IP к HOME_NET
     (для блокировки вредоносных источников)
+    НО: не блокируем трафик ОТ HOME_NET (внутренние контейнеры)
     """
     rules = []
     sid = config["base_sid"]
@@ -147,6 +148,7 @@ def generate_drop_rules(source_name, config, ips):
     for ip_or_cidr in ips[:max_rules]:
         # Блокируем трафик ОТ заблокированных IP к HOME_NET
         # Это блокирует вредоносные источники от доступа к нашей сети
+        # Правила pass для HOME_NET обрабатываются первыми, поэтому внутренний трафик не блокируется
         rule = (
             f'drop ip {ip_or_cidr} any -> $HOME_NET any '
             f'(msg:"{config["msg_prefix"]} {ip_or_cidr} -> HOME_NET"; '
