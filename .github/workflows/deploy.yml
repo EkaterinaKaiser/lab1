@@ -113,11 +113,15 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/lab-infrastructure/rules"
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" "mkdir -p ~/lab-infrastructure/{rules,logs,feeds}"
 
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             docker-compose.yml \
             suricata.yaml \
+            fetch_feeds.sh \
+            generate_custom_ioc_rules.py \
+            update_rules.sh \
+            Makefile \
             ${SSH_USER}@${SSH_HOST}:~/lab-infrastructure/
 
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
@@ -131,25 +135,91 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
             set -e
-            echo "=== Установка Suricata на хост ==="
+            echo "=== Установка Suricata и зависимостей ==="
 
             # Обновляем пакеты и устанавливаем Suricata
             sudo apt-get update
-            sudo apt-get install -y software-properties-common
+            sudo apt-get install -y software-properties-common curl python3 python3-pip
             sudo add-apt-repository -y ppa:oisf/suricata-stable
             sudo apt-get update
-            sudo apt-get install -y suricata
+            sudo apt-get install -y suricata suricata-update
+
+            # Устанавливаем опциональные зависимости
+            sudo apt-get install -y jq || echo "⚠️ jq не установлен (не критично)"
+
+            # Устанавливаем права на выполнение для скриптов
+            cd ~/lab-infrastructure
+            chmod +x fetch_feeds.sh generate_custom_ioc_rules.py update_rules.sh
 
             # Подготавливаем конфиги
-            sudo mkdir -p /etc/suricata/rules
+            sudo mkdir -p /etc/suricata/rules /var/log/suricata
             sudo cp ~/lab-infrastructure/suricata.yaml /etc/suricata/suricata.yaml
             sudo cp ~/lab-infrastructure/rules/* /etc/suricata/rules/ 2>/dev/null || true
 
-            # Проверяем конфигурацию
-            echo "Проверяем suricata.yaml..."
-            sudo suricata -T -c /etc/suricata/suricata.yaml || { echo "❌ Ошибка в конфигурации!"; exit 1; }
+            echo "✅ Suricata и зависимости установлены"
+          EOF
 
-            echo "Suricata установлена и проверена"
+      - name: Update Suricata rules (official + custom IoC)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
+            set -e
+            echo "=== Обновление правил Suricata ==="
+            cd ~/lab-infrastructure
+
+            # Обновляем индекс источников правил
+            echo "[1/4] Обновление индекса источников..."
+            sudo suricata-update update-sources || echo "⚠️ Не удалось обновить индекс (возможно, уже актуален)"
+
+            # Включаем ET Open (если еще не включен)
+            echo "[2/4] Включение ET Open rules..."
+            if ! sudo suricata-update list-enabled-sources 2>/dev/null | grep -q "et/open"; then
+              sudo suricata-update enable-source et/open || echo "⚠️ ET Open уже включен или недоступен"
+            fi
+
+            # Пробуем включить Positive Technologies rules
+            echo "[3/4] Попытка включения PT Security rules..."
+            PT_SOURCE=$(sudo suricata-update list-sources 2>/dev/null | grep -i "pt" | head -1 | awk '{print $1}' || echo "")
+            if [ -n "$PT_SOURCE" ]; then
+              if ! sudo suricata-update list-enabled-sources 2>/dev/null | grep -q "$PT_SOURCE"; then
+                sudo suricata-update enable-source "$PT_SOURCE" || echo "⚠️ Не удалось включить PT rules"
+              fi
+            else
+              echo "ℹ️ PT Security source не найден в доступных источниках"
+            fi
+
+            # Загружаем официальные правила
+            echo "[4/4] Загрузка официальных правил..."
+            sudo suricata-update || echo "⚠️ Не удалось загрузить официальные правила"
+
+            # Загружаем IoC-фиды и генерируем кастомные правила
+            echo "[*] Загрузка IoC-фидов..."
+            ./fetch_feeds.sh || echo "⚠️ Некоторые фиды не загружены"
+
+            echo "[*] Генерация кастомных правил..."
+            # Генерируем правила (скрипт сам определит правильный путь)
+            cd ~/lab-infrastructure
+            python3 generate_custom_ioc_rules.py || {
+              echo "⚠️ Не удалось сгенерировать правила, используем существующие"
+            }
+
+            # Копируем сгенерированные правила в /etc/suricata/rules если они созданы локально
+            if [ -f ~/lab-infrastructure/rules/custom_ioc.rules ]; then
+              sudo cp ~/lab-infrastructure/rules/custom_ioc.rules /etc/suricata/rules/ 2>/dev/null || true
+            fi
+
+            # Проверяем конфигурацию
+            echo "[*] Проверка конфигурации Suricata..."
+            sudo suricata -T -c /etc/suricata/suricata.yaml || { 
+              echo "❌ Ошибка в конфигурации!"
+              echo "Проверяем логи:"
+              sudo suricata -T -c /etc/suricata/suricata.yaml 2>&1 | tail -20
+              exit 1
+            }
+
+            echo "✅ Правила обновлены и проверены"
           EOF
 
       - name: Start Suricata in IPS mode (nfq)

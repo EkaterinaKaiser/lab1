@@ -1,182 +1,111 @@
-#!/usr/bin/env python3
-"""
-Генерация custom_ioc.rules из IoC-источников
-"""
-from pathlib import Path
-from datetime import datetime
-import sys
-import ipaddress  # ← Используем для валидации IP
+#!/usr/bin/env bash
+set -uo pipefail
+# Не используем -e, чтобы скрипт продолжал работу при ошибках отдельных источников
 
-# Конфигурация диапазонов SID для разных источников
-SOURCES = {
-    "feodo": {
-        "file": "feodo_ips.txt",
-        "base_sid": 9000000,
-        "msg_prefix": "[IPS] Feodo Tracker C&C",
-        "classtype": "trojan-activity"
-    },
-    "urlhaus": {
-        "file": "urlhaus_ips.txt",
-        "base_sid": 9100000,
-        "msg_prefix": "[IPS] URLhaus Malicious IP",
-        "classtype": "trojan-activity"
-    },
-    "botvrij": {
-        "file": "botvrij_ips.txt",
-        "base_sid": 9200000,
-        "msg_prefix": "[IPS] Botvrij.eu IoC",
-        "classtype": "trojan-activity"
-    }
-}
+# Скрипт для загрузки IoC-фидов из различных источников
+FEEDS_DIR="feeds"
+mkdir -p "$FEEDS_DIR"
 
-def load_ips(path: Path):
-    """Загрузка IP-адресов из текстового файла"""
-    ips = set()  # ← Используем set, чтобы избежать дубликатов
-    if not path.exists():
-        print(f"[!] WARNING: File {path} not found, skipping...")
-        return ips
+echo "[*] Fetching IoC feeds..."
 
-    with path.open() as f:
-        for line_num, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
+# 1. Feodo Tracker (botnet C&C серверы)
+echo "[+] Downloading Feodo Tracker IPs..."
+curl -s "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt" \
+  -o "$FEEDS_DIR/feodo_ips.txt" || echo "[!] Failed to download Feodo Tracker"
 
-            # Извлекаем IP: поддерживаем CSV и простой список
-            ip_raw = line.split(',')[0].split()[0] if ',' in line or ' ' in line else line
+# 2. URLhaus (malware URLs и IPs)
+echo "[+] Downloading URLhaus IPs..."
+curl -s "https://urlhaus.abuse.ch/downloads/csv_recent/" | \
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u > "$FEEDS_DIR/urlhaus_ips.txt" || \
+  echo "[!] Failed to download URLhaus"
 
-            try:
-                ip_obj = ipaddress.IPv4Address(ip_raw)
-                ips.add(str(ip_obj))
-            except ipaddress.AddressValueError:
-                print(f"[!] WARNING: Invalid IP '{ip_raw}' in {path}:{line_num}, skipping")
-                continue
+# 3. Botvrij.eu (IoC список)
+echo "[+] Downloading Botvrij.eu IPs..."
+curl -s "https://www.botvrij.eu/data/ioclist.ip-src" \
+  -o "$FEEDS_DIR/botvrij_ips.txt" || echo "[!] Failed to download Botvrij.eu"
 
-    return list(ips)  # ← Возвращаем список, но без дубликатов
+# 4. Cloud Providers IP ranges (Google Cloud, AWS, Azure, Cloudflare, DigitalOcean, Facebook, Twitter)
+echo "[+] Downloading Cloud Providers IP ranges..."
 
+# Google Cloud
+echo "[+] Downloading Google Cloud IPs..."
+if command -v jq >/dev/null 2>&1; then
+  curl -s "https://www.gstatic.com/ipranges/cloud.json" | \
+    jq -r '.prefixes[]? | select(.ipv4Prefix != null) | .ipv4Prefix' > "$FEEDS_DIR/google_cloud_ips.txt" 2>/dev/null || \
+    echo "[!] Failed to download Google Cloud IPs"
+else
+  curl -s "https://www.gstatic.com/ipranges/cloud.json" | \
+    grep -oE '"ipv4Prefix":\s*"[^"]*"' | cut -d'"' -f4 | grep -v '^$' > "$FEEDS_DIR/google_cloud_ips.txt" 2>/dev/null || \
+    echo "[!] Failed to download Google Cloud IPs (jq not installed)"
+fi
 
-def generate_drop_rules(source_name, config, ips):
-    """Генерация drop-правил для списка IP"""
-    rules = []
-    sid = config["base_sid"]
-    max_rules = 1000  # Ограничение для предотвращения перегрузки
+# AWS
+echo "[+] Downloading AWS IPs..."
+if command -v jq >/dev/null 2>&1; then
+  curl -s "https://ip-ranges.amazonaws.com/ip-ranges.json" | \
+    jq -r '.prefixes[]? | select(.ip_prefix != null) | .ip_prefix' > "$FEEDS_DIR/aws_ips.txt" 2>/dev/null || \
+    echo "[!] Failed to download AWS IPs"
+else
+  curl -s "https://ip-ranges.amazonaws.com/ip-ranges.json" | \
+    grep -oE '"ip_prefix":\s*"[^"]*"' | cut -d'"' -f4 | grep -v '^$' > "$FEEDS_DIR/aws_ips.txt" 2>/dev/null || \
+    echo "[!] Failed to download AWS IPs (jq not installed)"
+fi
 
-    for ip in ips[:max_rules]:
-        rule = (
-            f'drop ip {ip} any -> $HOME_NET any '
-            f'(msg:"{config["msg_prefix"]} {ip}"; '
-            f'classtype:{config["classtype"]}; '
-            f'sid:{sid}; rev:1;)\n'
-        )
-        rules.append(rule)
-        sid += 1
+# Azure - используем альтернативный источник
+echo "[+] Downloading Azure IPs..."
+curl -s "https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519" 2>/dev/null | \
+  grep -oE 'https://download\.microsoft\.com[^"]*\.json' | head -1 | \
+  xargs -I {} curl -s {} 2>/dev/null | \
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' | sort -u > "$FEEDS_DIR/azure_ips.txt" 2>/dev/null || \
+  echo "[!] Failed to download Azure IPs"
 
-    return rules, sid
+# Cloudflare
+echo "[+] Downloading Cloudflare IPs..."
+curl -s "https://www.cloudflare.com/ips-v4" > "$FEEDS_DIR/cloudflare_ips.txt" 2>/dev/null || \
+  echo "[!] Failed to download Cloudflare IPs"
 
+# DigitalOcean - используем GitHub источник
+echo "[+] Downloading DigitalOcean IPs..."
+curl -s "https://raw.githubusercontent.com/digitalocean/do_user_scripts/master/Utility/do-ip-ranges.sh" 2>/dev/null | \
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' | sort -u > "$FEEDS_DIR/digitalocean_ips.txt" 2>/dev/null || \
+  curl -s "https://www.digitalocean.com/geo/google.csv" 2>/dev/null | \
+  cut -d',' -f1 | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}' > "$FEEDS_DIR/digitalocean_ips.txt" 2>/dev/null || \
+  echo "[!] Failed to download DigitalOcean IPs"
 
-def add_to_yaml_config(rules_file: Path):
-    """Добавление custom_ioc.rules в suricata.yaml, если его там нет"""
-    yaml_file = Path("/etc/suricata/suricata.yaml")
+# 5. Ресурсы, запрещенные в РФ
+echo "[+] Downloading Russian blocked resources..."
 
-    if not yaml_file.exists():
-        print(f"[!] ERROR: {yaml_file} not found. Cannot update config.")
-        return
+# Antifilter
+echo "[+] Downloading Antifilter IPs..."
+curl -s "https://antifilter.download/list/allyouneed.lst" | \
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u > "$FEEDS_DIR/antifilter_ips.txt" 2>/dev/null || \
+  curl -s "https://antifilter.network/list/allyouneed.lst" | \
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u > "$FEEDS_DIR/antifilter_ips.txt" 2>/dev/null || \
+  echo "[!] Failed to download Antifilter IPs"
 
-    with yaml_file.open() as f:
-        content = f.read()
+# Zapret-info (реестр запрещенных ресурсов РФ)
+echo "[+] Downloading Zapret-info IPs..."
+curl -s "https://github.com/zapret-info/z-i/raw/master/dump.csv" 2>/dev/null | \
+  cut -d';' -f1 | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u > "$FEEDS_DIR/zapret_ips.txt" || \
+  echo "[!] Failed to download Zapret-info IPs"
 
-    rule_filename = rules_file.name
-    if rule_filename in content:
-        print(f"[*] {rule_filename} already included in suricata.yaml")
-        return
+# Роскомсвобода (если доступен API)
+echo "[+] Downloading Роскомсвобода IPs..."
+if command -v jq >/dev/null 2>&1; then
+  curl -s "https://reestr.rublacklist.net/api/v2/ips/json/" 2>/dev/null | \
+    jq -r '.[] | select(.ip != null) | .ip' > "$FEEDS_DIR/rublacklist_ips.txt" 2>/dev/null || \
+    echo "[!] Failed to download Роскомсвобода IPs"
+else
+  curl -s "https://reestr.rublacklist.net/api/v2/ips/json/" 2>/dev/null | \
+    grep -oE '"ip":\s*"[^"]*"' | cut -d'"' -f4 | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' > "$FEEDS_DIR/rublacklist_ips.txt" 2>/dev/null || \
+    echo "[!] Failed to download Роскомсвобода IPs (jq not installed)"
+fi
 
-    lines = content.splitlines()
-    new_lines = []
-    inside_rule_files = False
-    rule_files_indent = None
-
-    for line in lines:
-        new_lines.append(line)
-        if line.strip().startswith("rule-files:"):
-            inside_rule_files = True
-            # Найдём отступ для элементов списка
-            continue
-
-        if inside_rule_files and line.strip().startswith("- "):
-            rule_files_indent = len(line) - len(line.lstrip())
-            continue
-
-        # Останавливаемся, как только вышли из секции rule-files
-        if inside_rule_files and line and not line.startswith(" ") and not line.startswith("#"):
-            # Вставляем перед выходом из секции
-            if rule_files_indent is not None:
-                new_lines.insert(-1, " " * rule_files_indent + f"- {rule_filename}")
-            else:
-                # fallback: отступ 4 пробела
-                new_lines.insert(-1, "    - " + rule_filename)
-            inside_rule_files = False
-
-    # Если секция rule-files есть, но без элементов — добавим в неё
-    if inside_rule_files:
-        indent = rule_files_indent if rule_files_indent is not None else 4
-        new_lines.append(" " * indent + f"- {rule_filename}")
-
-    with yaml_file.open("w") as f:
-        f.write("\n".join(new_lines) + "\n")
-
-    print(f"[+] Added {rule_filename} to {yaml_file}")
-
-
-def main():
-    feeds_dir = Path(__file__).parent / "feeds"
-    out_file = Path("/etc/suricata/rules/custom_ioc.rules")
-
-    all_rules = []
-    stats = {}
-
-    print("[*] Starting IoC rules generation...\n")
-
-    for source_name, config in SOURCES.items():
-        source_file = feeds_dir / config["file"]
-        ips = load_ips(source_file)
-        if not ips:
-            stats[source_name] = 0
-            print(f"[!] {source_name.upper()}: No valid IPs loaded")
-            continue
-
-        rules, last_sid = generate_drop_rules(source_name, config, ips)
-        all_rules.extend(rules)
-        stats[source_name] = len(rules)
-        print(f"[+] {source_name.upper()}: Generated {len(rules)} rules "
-              f"(SID: {config['base_sid']}-{last_sid - 1})")
-
-    if not all_rules:
-        print("\n[!] ERROR: No rules generated. Check if feeds were downloaded correctly.")
-        print("[!] Run ./fetch_feeds.sh first to download IoC feeds.")
-        sys.exit(1)
-
-    # Убедимся, что директория существует
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-
-    with out_file.open("w") as f:
-        f.write(f"# Autogenerated IoC-based rules from multiple sources\n")
-        f.write(f"# Generated: {datetime.now().isoformat()}\n")
-        f.write(f"# Total rules: {len(all_rules)}\n")
-        f.write(f"# Sources: {', '.join(SOURCES.keys())}\n")
-        f.write(f"#\n")
-        for source, count in stats.items():
-            f.write(f"# - {source}: {count} rules\n")
-        f.write(f"\n")
-        f.writelines(all_rules)
-
-    print(f"\n[+] Total: Generated {len(all_rules)} rules into {out_file}")
-
-    # Добавляем в конфиг Suricata
-    add_to_yaml_config(out_file)
-
-    print("\n[*] Done! Restart or reload Suricata to apply changes.")
-    print("[*] Example: sudo systemctl reload suricata")
-
-
-if __name__ == "__main__":
-    main()
+echo "[+] Feed download completed!"
+echo "[*] Summary:"
+for feed in "$FEEDS_DIR"/*.txt; do
+  if [ -f "$feed" ]; then
+    count=$(wc -l < "$feed" 2>/dev/null || echo "0")
+    echo "  - $(basename "$feed"): $count lines"
+  fi
+done
