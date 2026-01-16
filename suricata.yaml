@@ -21,7 +21,7 @@ nfq:
 # --- Правила ---
 default-rule-path: /etc/suricata/rules
 rule-files:
-  - suricata.rules  # Официальные правила (ET Open, PT Security и др.)
+  - suricata.rules  # Официальные правила (ET Open, PT Security и др.) - создается suricata-update
   - custom_ioc.rules  # Кастомные правила из IoC-источников
 
 # --- Вывод событий ---
