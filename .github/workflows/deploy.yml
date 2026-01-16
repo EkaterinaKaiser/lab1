@@ -446,9 +446,33 @@ jobs:
             sleep 5
 
             echo "→ Тест ICMP (ожидается блокировка):"
+            # Проверяем наличие правила для ICMP
+            if [ -f /etc/suricata/rules/custom.rules ]; then
+              echo "  Правило custom.rules найдено"
+              sudo grep -i icmp /etc/suricata/rules/custom.rules || echo "  ⚠️ Правило ICMP не найдено в файле"
+            else
+              echo "  ⚠️ Файл custom.rules не найден!"
+            fi
+            
+            # Пытаемся отправить ICMP пакет
             if docker exec attacker timeout 3 ping -c 1 -W 1 victim &>/dev/null; then
               echo "❌ ICMP прошёл — Suricata НЕ блокирует!"
-              sudo tail -n 20 /var/log/suricata/eve.json | grep -i icmp || true
+              echo "  Диагностика:"
+              echo "  Последние события Suricata (ICMP/drop):"
+              sudo tail -n 30 /var/log/suricata/eve.json 2>/dev/null | grep -E '"icmp"|"drop"|"alert"' | tail -5 | jq -r '.event_type, .alert.signature, .src_ip, .dest_ip' 2>/dev/null || echo "  Нет событий ICMP/drop"
+              echo "  Проверка правил ICMP:"
+              sudo grep -i icmp /etc/suricata/rules/*.rules 2>/dev/null | head -5 || echo "  Правила ICMP не найдены"
+              echo "  Статус Suricata:"
+              if [ -f /var/run/suricata.pid ]; then
+                PID=$(cat /var/run/suricata.pid)
+                if kill -0 "$PID" 2>/dev/null; then
+                  echo "  Suricata работает (PID: $PID)"
+                else
+                  echo "  ⚠️ Процесс Suricata не найден"
+                fi
+              else
+                echo "  ⚠️ PID файл не найден"
+              fi
               exit 1
             else
               echo "✅ ICMP заблокирован"
