@@ -559,8 +559,22 @@ jobs:
             
             # Убеждаемся, что старые процессы Suricata остановлены
             echo "Остановка старых процессов Suricata..."
-            sudo pkill -9 -f suricata 2>/dev/null || true
+            # Останавливаем все процессы Suricata
+            if pgrep -f suricata >/dev/null 2>&1; then
+              echo "  Найдены запущенные процессы Suricata, останавливаем..."
+              sudo pkill -9 -f suricata 2>/dev/null || true
+              sleep 2
+              # Проверяем, что процессы действительно остановлены
+              if pgrep -f suricata >/dev/null 2>&1; then
+                echo "  ⚠️ Некоторые процессы Suricata все еще запущены, принудительно завершаем..."
+                sudo pkill -9 suricata 2>/dev/null || true
+                sleep 1
+              fi
+            fi
             sudo rm -f /var/run/suricata.pid 2>/dev/null || true
+            sudo rm -f /var/run/suricata/suricata-command.socket 2>/dev/null || true
+            sudo rm -f /tmp/suricata-command.socket 2>/dev/null || true
+            echo "✅ Старые процессы Suricata остановлены"
             sleep 2
 
             # Проверяем, что Suricata установлена на хосте
@@ -574,10 +588,26 @@ jobs:
               }
             fi
 
-            # Проверяем, что конфигурация и правила на месте
-            if [ ! -f /etc/suricata/suricata.yaml ]; then
-              echo "❌ Конфигурация Suricata не найдена в /etc/suricata/suricata.yaml"
-              exit 1
+            # Копируем обновленную конфигурацию на хост (ВАЖНО: обновляем каждый раз!)
+            echo "Копирование конфигурации Suricata на хост..."
+            if [ -f ~/lab-infrastructure/suricata.yaml ]; then
+              sudo cp ~/lab-infrastructure/suricata.yaml /etc/suricata/suricata.yaml
+              echo "✅ Конфигурация скопирована"
+            else
+              echo "⚠️ Файл suricata.yaml не найден в ~/lab-infrastructure, проверяем существующую конфигурацию..."
+              if [ ! -f /etc/suricata/suricata.yaml ]; then
+                echo "❌ Конфигурация Suricata не найдена в /etc/suricata/suricata.yaml"
+                exit 1
+              fi
+            fi
+            
+            # Проверяем, что в конфигурации нет runmodes (чтобы избежать конфликта с -q)
+            if sudo grep -q "^runmodes:" /etc/suricata/suricata.yaml 2>/dev/null; then
+              echo "⚠️ В конфигурации найден runmodes, удаляем его..."
+              sudo sed -i '/^runmodes:/,/^[^ ]/d' /etc/suricata/suricata.yaml
+              # Удаляем пустые строки в начале
+              sudo sed -i '/^$/N;/^\n$/d' /etc/suricata/suricata.yaml
+              echo "✅ runmodes удален из конфигурации"
             fi
 
             if [ ! -f /etc/suricata/rules/suricata.rules ]; then
