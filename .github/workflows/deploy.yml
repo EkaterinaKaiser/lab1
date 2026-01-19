@@ -601,13 +601,31 @@ jobs:
               fi
             fi
             
-            # Проверяем, что в конфигурации нет runmodes (чтобы избежать конфликта с -q)
-            if sudo grep -q "^runmodes:" /etc/suricata/suricata.yaml 2>/dev/null; then
+            # ВАЖНО: Удаляем runmodes из конфигурации (конфликт с параметром -q)
+            echo "Проверка и удаление runmodes из конфигурации..."
+            if sudo grep -qE "^runmodes:|^  - runmode:" /etc/suricata/suricata.yaml 2>/dev/null; then
               echo "⚠️ В конфигурации найден runmodes, удаляем его..."
-              sudo sed -i '/^runmodes:/,/^[^ ]/d' /etc/suricata/suricata.yaml
-              # Удаляем пустые строки в начале
+              # Удаляем секцию runmodes (может быть в разных форматах)
+              sudo sed -i '/^runmodes:/,/^[a-zA-Z#]/d' /etc/suricata/suricata.yaml
+              # Удаляем строки с runmode
+              sudo sed -i '/^  - runmode:/d' /etc/suricata/suricata.yaml
+              sudo sed -i '/^    - runmode:/d' /etc/suricata/suricata.yaml
+              # Удаляем пустые строки подряд
               sudo sed -i '/^$/N;/^\n$/d' /etc/suricata/suricata.yaml
               echo "✅ runmodes удален из конфигурации"
+            else
+              echo "✅ runmodes не найден в конфигурации"
+            fi
+            
+            # Проверяем результат
+            echo "Проверка конфигурации после удаления runmodes:"
+            if sudo grep -qE "^runmodes:|^  - runmode:" /etc/suricata/suricata.yaml 2>/dev/null; then
+              echo "❌ КРИТИЧНО: runmodes все еще присутствует в конфигурации!"
+              echo "Содержимое конфигурации (первые 20 строк):"
+              sudo head -20 /etc/suricata/suricata.yaml
+              echo "Попытка ручного удаления..."
+              sudo sed -i '/runmodes/,/^[a-zA-Z#]/d' /etc/suricata/suricata.yaml
+              sudo sed -i '/runmode/d' /etc/suricata/suricata.yaml
             fi
 
             if [ ! -f /etc/suricata/rules/suricata.rules ]; then
@@ -644,12 +662,46 @@ jobs:
             
             # Проверяем конфигурацию перед запуском
             echo "Проверка конфигурации Suricata..."
+            # Сначала проверяем, что runmodes действительно удален
+            if sudo grep -qE "runmodes|runmode" /etc/suricata/suricata.yaml 2>/dev/null; then
+              echo "❌ КРИТИЧНО: runmodes все еще присутствует в конфигурации!"
+              echo "Содержимое конфигурации (строки с runmodes):"
+              sudo grep -nE "runmodes|runmode" /etc/suricata/suricata.yaml
+              echo "Принудительное удаление всех упоминаний runmodes..."
+              # Более агрессивное удаление
+              sudo sed -i '/runmodes/d' /etc/suricata/suricata.yaml
+              sudo sed -i '/runmode/d' /etc/suricata/suricata.yaml
+              sudo sed -i '/^[[:space:]]*-[[:space:]]*runmode/d' /etc/suricata/suricata.yaml
+              # Удаляем пустые строки
+              sudo sed -i '/^$/N;/^\n$/d' /etc/suricata/suricata.yaml
+              echo "Проверка после удаления:"
+              if sudo grep -qE "runmodes|runmode" /etc/suricata/suricata.yaml 2>/dev/null; then
+                echo "❌ Не удалось удалить runmodes! Показываем первые 30 строк конфигурации:"
+                sudo head -30 /etc/suricata/suricata.yaml
+                exit 1
+              else
+                echo "✅ runmodes успешно удален"
+              fi
+            fi
+            
+            # Теперь проверяем конфигурацию
             if sudo suricata -T -c /etc/suricata/suricata.yaml > /tmp/suricata-test-before-start.log 2>&1; then
               echo "✅ Конфигурация валидна"
             else
               echo "⚠️ Ошибки в конфигурации:"
               sudo tail -20 /tmp/suricata-test-before-start.log
-              echo "Продолжаем запуск..."
+              # Если ошибка связана с runmode, пытаемся исправить
+              if sudo grep -q "run mode\|runmode" /tmp/suricata-test-before-start.log 2>/dev/null; then
+                echo "Обнаружена ошибка с runmode, пытаемся исправить..."
+                sudo sed -i '/runmodes/d' /etc/suricata/suricata.yaml
+                sudo sed -i '/runmode/d' /etc/suricata/suricata.yaml
+                sudo sed -i '/^[[:space:]]*-[[:space:]]*runmode/d' /etc/suricata/suricata.yaml
+                echo "Повторная проверка конфигурации..."
+                sudo suricata -T -c /etc/suricata/suricata.yaml > /tmp/suricata-test-before-start2.log 2>&1 && echo "✅ Конфигурация исправлена" || {
+                  echo "❌ Не удалось исправить конфигурацию"
+                  sudo tail -20 /tmp/suricata-test-before-start2.log
+                }
+              fi
             fi
             
             # Запускаем Suricata в фоновом режиме с unix socket для управления
