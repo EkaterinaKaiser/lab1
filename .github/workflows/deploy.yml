@@ -474,8 +474,29 @@ jobs:
             exit 1
           fi
 
+          # Получаем IP адреса контейнеров для более точных правил
+          VICTIM_IP=$(docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress // empty' 2>/dev/null || \
+            docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks."labnet".IPAddress // .[0].NetworkSettings.Networks."lab-infrastructure_labnet".IPAddress // empty' 2>/dev/null || echo "")
+          ATTACKER_IP=$(docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress // empty' 2>/dev/null || \
+            docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks."labnet".IPAddress // .[0].NetworkSettings.Networks."lab-infrastructure_labnet".IPAddress // empty' 2>/dev/null || echo "")
+          
+          echo "IP адреса:"
+          echo "  victim: $VICTIM_IP"
+          echo "  attacker: $ATTACKER_IP"
+
           # --- Безопасное создание цепочки: удаляем ВСЁ, что связано с PRE-SURICATA ---
           echo "Очистка старых правил..."
+
+          # Удаляем старые правила NFQUEUE из FORWARD
+          sudo iptables -D FORWARD -i "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3 2>/dev/null || true
+          sudo iptables -D FORWARD -o "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3 2>/dev/null || true
+          if [ -n "$VICTIM_IP" ]; then
+            sudo iptables -D FORWARD -i "$BRIDGE_NAME" -d "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3 2>/dev/null || true
+            sudo iptables -D FORWARD -o "$BRIDGE_NAME" -s "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3 2>/dev/null || true
+          fi
+          if [ -n "$ATTACKER_IP" ] && [ -n "$VICTIM_IP" ]; then
+            sudo iptables -D FORWARD -i "$BRIDGE_NAME" -s "$ATTACKER_IP" -d "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3 2>/dev/null || true
+          fi
 
           # Удаляем ссылки из DOCKER-USER (может быть несколько — удаляем в цикле)
           while sudo iptables -C DOCKER-USER -j PRE-SURICATA 2>/dev/null; do
@@ -489,12 +510,33 @@ jobs:
           # Создаём заново
           echo "Создание цепочки PRE-SURICATA..."
           sudo iptables -N PRE-SURICATA
-          sudo iptables -A DOCKER-USER -j PRE-SURICATA
+          sudo iptables -I DOCKER-USER 1 -j PRE-SURICATA
 
           # Добавляем правила для bridge (балансировка между очередями 0-3)
-          # Suricata запускается с -q 0 -q 1 -q 2 -q 3, поэтому настраиваем все очереди
-          sudo iptables -A PRE-SURICATA -i "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3 --queue-bypass
-          sudo iptables -A PRE-SURICATA -o "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3 --queue-bypass
+          # Важно: правила должны быть ДО других правил в цепочке
+          echo "Добавление правил NFQUEUE..."
+          
+          # Правило 1: весь трафик через bridge (входящий)
+          sudo iptables -I PRE-SURICATA 1 -i "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3 --queue-bypass
+          echo "  ✓ Правило добавлено: трафик через bridge (входящий) -> NFQUEUE"
+          
+          # Правило 2: весь трафик через bridge (исходящий)
+          sudo iptables -I PRE-SURICATA 2 -o "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3 --queue-bypass
+          echo "  ✓ Правило добавлено: трафик через bridge (исходящий) -> NFQUEUE"
+          
+          # Дополнительные правила для конкретных IP (если определены)
+          if [ -n "$VICTIM_IP" ]; then
+            sudo iptables -I PRE-SURICATA 3 -i "$BRIDGE_NAME" -d "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3 --queue-bypass
+            echo "  ✓ Правило добавлено: трафик к victim ($VICTIM_IP) -> NFQUEUE"
+          fi
+          if [ -n "$VICTIM_IP" ]; then
+            sudo iptables -I PRE-SURICATA 4 -o "$BRIDGE_NAME" -s "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3 --queue-bypass
+            echo "  ✓ Правило добавлено: трафик от victim ($VICTIM_IP) -> NFQUEUE"
+          fi
+          if [ -n "$ATTACKER_IP" ] && [ -n "$VICTIM_IP" ]; then
+            sudo iptables -I PRE-SURICATA 5 -i "$BRIDGE_NAME" -s "$ATTACKER_IP" -d "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3 --queue-bypass
+            echo "  ✓ Правило добавлено: трафик attacker ($ATTACKER_IP) -> victim ($VICTIM_IP) -> NFQUEUE"
+          fi
 
           echo "✅ iptables настроены для NFQUEUE (очереди 0-3)"
           sudo iptables -L DOCKER-USER -n -v
@@ -793,8 +835,11 @@ jobs:
               # 6. Проверка IP адресов контейнеров
               echo ""
               echo "  6. Проверка IP адресов контейнеров:"
-              ATTACKER_IP=$(docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks.labnet.IPAddress // .[0].NetworkSettings.Networks.lab-infrastructure_labnet.IPAddress // empty')
-              VICTIM_IP=$(docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks.labnet.IPAddress // .[0].NetworkSettings.Networks.lab-infrastructure_labnet.IPAddress // empty')
+              # Исправляем синтаксис jq - используем правильное имя сети
+              ATTACKER_IP=$(docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress // empty' 2>/dev/null || \
+                docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks."labnet".IPAddress // .[0].NetworkSettings.Networks."lab-infrastructure_labnet".IPAddress // empty' 2>/dev/null || echo "")
+              VICTIM_IP=$(docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress // empty' 2>/dev/null || \
+                docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks."labnet".IPAddress // .[0].NetworkSettings.Networks."lab-infrastructure_labnet".IPAddress // empty' 2>/dev/null || echo "")
               echo "    attacker: $ATTACKER_IP"
               echo "    victim: $VICTIM_IP"
               if [ -n "$VICTIM_IP" ]; then
@@ -808,7 +853,30 @@ jobs:
                   echo "    ⚠️ IP НЕ входит в HOME_NET (172.16.0.0/12)!"
                   echo "    Правило может не сработать, если HOME_NET не включает этот IP"
                 fi
+              else
+                echo "    ⚠️ Не удалось определить IP адрес victim"
+                echo "    Попытка альтернативного метода:"
+                docker inspect victim 2>/dev/null | grep -i ipaddress | head -3 || echo "    IP адрес не найден"
               fi
+              
+              # 7. Проверка, почему трафик не проходит через NFQUEUE
+              echo ""
+              echo "  7. Дополнительная диагностика NFQUEUE:"
+              echo "    Проверка всех правил FORWARD:"
+              sudo iptables -L FORWARD -n -v 2>/dev/null | head -10
+              echo ""
+              echo "    Проверка цепочки PRE-SURICATA:"
+              sudo iptables -L PRE-SURICATA -n -v 2>/dev/null || echo "    Цепочка PRE-SURICATA не найдена"
+              echo ""
+              echo "    Проверка цепочки DOCKER-USER:"
+              sudo iptables -L DOCKER-USER -n -v 2>/dev/null | head -10
+              echo ""
+              echo "    Попытка отправки тестового ICMP пакета для проверки счетчиков:"
+              echo "    (Отправляем ping и проверяем, увеличиваются ли счетчики NFQUEUE)"
+              docker exec attacker timeout 2 ping -c 2 victim >/dev/null 2>&1 || true
+              sleep 1
+              echo "    Счетчики NFQUEUE после ping:"
+              sudo iptables -L PRE-SURICATA -n -v 2>/dev/null | grep "NFQUEUE" || echo "    Правила NFQUEUE не найдены"
               
               echo ""
               echo "  === РЕКОМЕНДАЦИИ ==="
@@ -855,14 +923,16 @@ jobs:
               echo "  Последние события Suricata (HTTP/drop):"
               sudo tail -n 50 /var/log/suricata/eve.json 2>/dev/null | grep -E '"http"|"drop"|"alert"' | tail -10 | jq -r 'select(.event_type=="drop" or .event_type=="alert") | "\(.event_type) | src:\(.src_ip // "N/A") | dst:\(.dest_ip // "N/A") | sig:\(.alert.signature // "N/A")"' 2>/dev/null || echo "  Нет событий HTTP/drop"
               echo "  IP адрес attacker контейнера:"
-              ATTACKER_IP=$(docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks.labnet.IPAddress // .[0].NetworkSettings.Networks.lab-infrastructure_labnet.IPAddress // empty')
+              ATTACKER_IP=$(docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress // empty' 2>/dev/null || \
+                docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks."labnet".IPAddress // .[0].NetworkSettings.Networks."lab-infrastructure_labnet".IPAddress // empty' 2>/dev/null || echo "")
               if [ -n "$ATTACKER_IP" ]; then
                 echo "  $ATTACKER_IP"
               else
                 docker inspect attacker 2>/dev/null | grep -i ipaddress | head -1 || echo "  Не удалось определить IP"
               fi
               echo "  IP адрес victim контейнера:"
-              VICTIM_IP=$(docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks.labnet.IPAddress // .[0].NetworkSettings.Networks.lab-infrastructure_labnet.IPAddress // empty')
+              VICTIM_IP=$(docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress // empty' 2>/dev/null || \
+                docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks."labnet".IPAddress // .[0].NetworkSettings.Networks."lab-infrastructure_labnet".IPAddress // empty' 2>/dev/null || echo "")
               if [ -n "$VICTIM_IP" ]; then
                 echo "  $VICTIM_IP"
               else
