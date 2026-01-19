@@ -1,7 +1,7 @@
 %YAML 1.1
 ---
-runmodes:
-  - runmode: workers
+# Режим работы задается через параметр -q (NFQUEUE) при запуске
+# runmodes не указываем, так как режим определяется параметром -q в команде запуска
 
 vars:
   address-groups:
