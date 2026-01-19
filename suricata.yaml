@@ -91,3 +91,9 @@ flow:
 stats:
   enabled: yes
   interval: 8
+  # Включаем статистику для диагностики
+  stats-loggers:
+    - file:
+        enabled: yes
+        filename: stats.log
+        append: yes

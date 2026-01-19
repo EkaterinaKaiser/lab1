@@ -513,29 +513,29 @@ jobs:
           sudo iptables -I DOCKER-USER 1 -j PRE-SURICATA
 
           # Добавляем правила для bridge (балансировка между очередями 0-3)
-          # Важно: правила должны быть ДО других правил в цепочке
+          # ВАЖНО: НЕ используем --queue-bypass, чтобы пакеты не пропускались при переполнении очереди
           echo "Добавление правил NFQUEUE..."
           
-          # Правило 1: весь трафик через bridge (входящий)
-          sudo iptables -I PRE-SURICATA 1 -i "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3 --queue-bypass
-          echo "  ✓ Правило добавлено: трафик через bridge (входящий) -> NFQUEUE"
+          # Правило 1: весь трафик через bridge (входящий) - БЕЗ bypass
+          sudo iptables -I PRE-SURICATA 1 -i "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3
+          echo "  ✓ Правило добавлено: трафик через bridge (входящий) -> NFQUEUE (0-3)"
           
-          # Правило 2: весь трафик через bridge (исходящий)
-          sudo iptables -I PRE-SURICATA 2 -o "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3 --queue-bypass
-          echo "  ✓ Правило добавлено: трафик через bridge (исходящий) -> NFQUEUE"
+          # Правило 2: весь трафик через bridge (исходящий) - БЕЗ bypass
+          sudo iptables -I PRE-SURICATA 2 -o "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3
+          echo "  ✓ Правило добавлено: трафик через bridge (исходящий) -> NFQUEUE (0-3)"
           
-          # Дополнительные правила для конкретных IP (если определены)
+          # Дополнительные правила для конкретных IP (если определены) - БЕЗ bypass
           if [ -n "$VICTIM_IP" ]; then
-            sudo iptables -I PRE-SURICATA 3 -i "$BRIDGE_NAME" -d "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3 --queue-bypass
-            echo "  ✓ Правило добавлено: трафик к victim ($VICTIM_IP) -> NFQUEUE"
+            sudo iptables -I PRE-SURICATA 3 -i "$BRIDGE_NAME" -d "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3
+            echo "  ✓ Правило добавлено: трафик к victim ($VICTIM_IP) -> NFQUEUE (0-3)"
           fi
           if [ -n "$VICTIM_IP" ]; then
-            sudo iptables -I PRE-SURICATA 4 -o "$BRIDGE_NAME" -s "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3 --queue-bypass
-            echo "  ✓ Правило добавлено: трафик от victim ($VICTIM_IP) -> NFQUEUE"
+            sudo iptables -I PRE-SURICATA 4 -o "$BRIDGE_NAME" -s "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3
+            echo "  ✓ Правило добавлено: трафик от victim ($VICTIM_IP) -> NFQUEUE (0-3)"
           fi
           if [ -n "$ATTACKER_IP" ] && [ -n "$VICTIM_IP" ]; then
-            sudo iptables -I PRE-SURICATA 5 -i "$BRIDGE_NAME" -s "$ATTACKER_IP" -d "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3 --queue-bypass
-            echo "  ✓ Правило добавлено: трафик attacker ($ATTACKER_IP) -> victim ($VICTIM_IP) -> NFQUEUE"
+            sudo iptables -I PRE-SURICATA 5 -i "$BRIDGE_NAME" -s "$ATTACKER_IP" -d "$VICTIM_IP" -j NFQUEUE --queue-balance 0:3
+            echo "  ✓ Правило добавлено: трафик attacker ($ATTACKER_IP) -> victim ($VICTIM_IP) -> NFQUEUE (0-3)"
           fi
 
           echo "✅ iptables настроены для NFQUEUE (очереди 0-3)"
@@ -606,14 +606,19 @@ jobs:
             # Запускаем Suricata в режиме IPS с NFQUEUE (очереди 0-3)
             echo ""
             echo "Запуск Suricata в режиме IPS с NFQUEUE (очереди 0-3)..."
-            echo "Команда: suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3 -l /var/log/suricata --pidfile /var/run/suricata.pid"
+            echo "Команда: suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3 -l /var/log/suricata --pidfile /var/run/suricata.pid --unix-socket"
             
-            # Запускаем Suricata в фоновом режиме
+            # Убеждаемся, что директория для unix socket существует
+            sudo mkdir -p /var/run/suricata
+            sudo chmod 755 /var/run/suricata
+            
+            # Запускаем Suricata в фоновом режиме с unix socket для управления
             sudo nohup suricata \
               -c /etc/suricata/suricata.yaml \
               -q 0 -q 1 -q 2 -q 3 \
               -l /var/log/suricata \
               --pidfile /var/run/suricata.pid \
+              --unix-socket \
               > /var/log/suricata/startup.log 2>&1 &
 
             # Ждем создания PID файла
@@ -656,6 +661,59 @@ jobs:
               fi
               sleep 1
             done
+            
+            # Ждем полной инициализации Suricata (особенно NFQUEUE)
+            echo "Ожидание полной инициализации Suricata (NFQUEUE)..."
+            sleep 5
+            
+            # Проверяем, что Suricata слушает NFQUEUE
+            echo "Проверка, что Suricata слушает NFQUEUE:"
+            if sudo grep -q "NFQ running\|nfq.*mode" /var/log/suricata/suricata.log 2>/dev/null; then
+              echo "✅ Suricata запущена в режиме NFQUEUE"
+              sudo grep -i "nfq\|nfqueue" /var/log/suricata/suricata.log 2>/dev/null | tail -3
+            else
+              echo "⚠️ Не найдено подтверждения работы NFQUEUE в логах"
+            fi
+            
+            # Проверяем, что eve.json создан и доступен для записи
+            echo ""
+            echo "Проверка доступности eve.json для записи:"
+            if [ -f /var/log/suricata/eve.json ]; then
+              echo "  ✓ Файл eve.json существует"
+              sudo ls -lh /var/log/suricata/eve.json
+              sudo touch /var/log/suricata/eve.json 2>/dev/null && echo "  ✓ Файл доступен для записи" || echo "  ⚠️ Проблема с правами доступа"
+            else
+              echo "  ⚠️ Файл eve.json не существует (Suricata еще не создал его)"
+              echo "  Проверяем права на директорию:"
+              sudo ls -ld /var/log/suricata
+            fi
+            
+            # Проверяем, что Suricata имеет права на запись
+            SURICATA_USER=$(ps aux | grep "^[^ ]* *$PID " | awk '{print $1}' | head -1)
+            echo "  Пользователь Suricata: $SURICATA_USER"
+            if [ -d /var/log/suricata ]; then
+              sudo chown -R "$SURICATA_USER:$SURICATA_USER" /var/log/suricata 2>/dev/null || \
+              sudo chown -R suricata:suricata /var/log/suricata 2>/dev/null || \
+              sudo chmod 777 /var/log/suricata 2>/dev/null || true
+              echo "  Права на директорию обновлены"
+            fi
+            
+            # Проверяем статистику Suricata через unix socket (если доступна)
+            echo ""
+            echo "Проверка статистики Suricata (обработанные пакеты):"
+            if [ -S /var/run/suricata/suricata-command.socket ] || [ -S /tmp/suricata-command.socket ]; then
+              SOCKET_PATH=$(ls /var/run/suricata/suricata-command.socket /tmp/suricata-command.socket 2>/dev/null | head -1)
+              echo "  Unix socket найден: $SOCKET_PATH"
+              if command -v suricatasc >/dev/null 2>&1; then
+                echo "  Попытка получить статистику через suricatasc..."
+                echo "stats" | sudo suricatasc -s "$SOCKET_PATH" 2>/dev/null | grep -iE "packet|capture|nfq|queue|drop|alert" | head -20 || echo "  Не удалось получить статистику"
+              else
+                echo "  suricatasc не установлен"
+              fi
+            else
+              echo "  Unix socket не найден, проверяем логи Suricata на наличие обработанных пакетов:"
+              sudo grep -iE "packet.*captured|nfq.*packet|queue.*packet" /var/log/suricata/suricata.log 2>/dev/null | tail -5 || echo "  Нет информации о пакетах в логах"
+            fi
 
             # Проверяем статус
             echo ""
