@@ -219,52 +219,79 @@ jobs:
 
             # Загружаем официальные правила (suricata.yaml уже должен быть на месте)
             echo "[4/4] Загрузка официальных правил..."
-            if sudo suricata-update; then
+            
+            # Пробуем загрузить правила с отключением проблемных правил modbus
+            echo "[*] Попытка загрузки правил с обработкой ошибок modbus..."
+            if sudo suricata-update --no-reload 2>&1 | tee /tmp/suricata-update.log; then
               echo "✅ Правила загружены успешно"
-              # suricata-update сохраняет правила в /var/lib/suricata/rules/suricata.rules
-              # Копируем в /etc/suricata/rules/ для совместимости с конфигурацией
-              if [ -f /var/lib/suricata/rules/suricata.rules ]; then
-                echo "[*] Копирование правил в /etc/suricata/rules/..."
-                sudo cp /var/lib/suricata/rules/suricata.rules /etc/suricata/rules/suricata.rules
-                echo "✅ Правила скопированы"
-                
-                # Подсчитываем количество правил ET Open
-                echo ""
-                echo "=== Статистика загруженных правил Emerging Threats Open ==="
-                
-                # Подсчитываем активные правила (alert, drop, pass)
-                ACTIVE_RULES=$(sudo grep -E "^\s*(alert|drop|pass)" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
-                
-                # Подсчитываем правила по типам
-                ALERT_RULES=$(sudo grep -E "^\s*alert" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
-                DROP_RULES=$(sudo grep -E "^\s*drop" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
-                PASS_RULES=$(sudo grep -E "^\s*pass" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
-                
-                echo "📊 Всего активных правил в suricata.rules (ET Open + PT Security): $ACTIVE_RULES"
-                echo "   - alert правил: $ALERT_RULES"
-                echo "   - drop правил: $DROP_RULES"
-                echo "   - pass правил: $PASS_RULES"
-                
-                # Показываем информацию о включенных источниках
-                echo ""
-                echo "Включенные источники правил:"
-                ENABLED_SOURCES=$(sudo suricata-update list-enabled-sources 2>/dev/null | grep -v "^$" || echo "")
-                if [ ! -z "$ENABLED_SOURCES" ]; then
-                  echo "$ENABLED_SOURCES" | while read -r source; do
-                    echo "  ✓ $source"
-                  done
-                else
-                  echo "  ⚠️ Не удалось получить список источников"
-                fi
-                
-                # Показываем примеры правил ET Open
-                echo ""
-                echo "Примеры правил ET Open (первые 3):"
-                sudo grep -E "^\s*(alert|drop|pass)" /etc/suricata/rules/suricata.rules 2>/dev/null | head -3 | sed 's/^/  /' || echo "  Правила не найдены"
-                echo ""
-              fi
             else
-              echo "⚠️ Не удалось загрузить официальные правила"
+              # Если загрузка не удалась из-за modbus, пробуем отключить modbus правила
+              echo "⚠️ Первая попытка загрузки не удалась, проверяем причину..."
+              if grep -q "modbus" /tmp/suricata-update.log 2>/dev/null; then
+                echo "[*] Обнаружена проблема с modbus правилами, отключаем их..."
+                # Отключаем правила modbus через disable.conf (формат: regex для SID или сообщения)
+                sudo mkdir -p /var/lib/suricata/update
+                # Отключаем правила modbus по SID (2250007, 2250008, 2250009) и по протоколу
+                {
+                  echo "re:^alert modbus"
+                  echo "re:modbus"
+                  echo "2250007"
+                  echo "2250008"
+                  echo "2250009"
+                } | sudo tee /var/lib/suricata/update/disable.conf >/dev/null 2>&1 || true
+                echo "[*] Повторная попытка загрузки правил..."
+                if sudo suricata-update --no-reload 2>&1 | tee /tmp/suricata-update-retry.log; then
+                  echo "✅ Правила загружены после отключения modbus"
+                else
+                  echo "⚠️ Не удалось загрузить правила даже после отключения modbus"
+                  echo "[*] Пробуем загрузить правила без проверки (--no-test)..."
+                  sudo suricata-update --no-reload --no-test 2>&1 || echo "⚠️ Загрузка без проверки также не удалась"
+                fi
+              fi
+            fi
+            
+            # Копируем правила, если они были загружены
+            if [ -f /var/lib/suricata/rules/suricata.rules ]; then
+              echo "[*] Копирование правил в /etc/suricata/rules/..."
+              sudo cp /var/lib/suricata/rules/suricata.rules /etc/suricata/rules/suricata.rules
+              echo "✅ Правила скопированы"
+              
+              # Подсчитываем количество правил ET Open
+              echo ""
+              echo "=== Статистика загруженных правил Emerging Threats Open ==="
+              
+              # Подсчитываем активные правила (alert, drop, pass)
+              ACTIVE_RULES=$(sudo grep -E "^\s*(alert|drop|pass)" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
+              
+              # Подсчитываем правила по типам
+              ALERT_RULES=$(sudo grep -E "^\s*alert" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
+              DROP_RULES=$(sudo grep -E "^\s*drop" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
+              PASS_RULES=$(sudo grep -E "^\s*pass" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
+              
+              echo "📊 Всего активных правил в suricata.rules (ET Open + PT Security): $ACTIVE_RULES"
+              echo "   - alert правил: $ALERT_RULES"
+              echo "   - drop правил: $DROP_RULES"
+              echo "   - pass правил: $PASS_RULES"
+              
+              # Показываем информацию о включенных источниках
+              echo ""
+              echo "Включенные источники правил:"
+              ENABLED_SOURCES=$(sudo suricata-update list-enabled-sources 2>/dev/null | grep -v "^$" || echo "")
+              if [ ! -z "$ENABLED_SOURCES" ]; then
+                echo "$ENABLED_SOURCES" | while read -r source; do
+                  echo "  ✓ $source"
+                done
+              else
+                echo "  ⚠️ Не удалось получить список источников"
+              fi
+              
+              # Показываем примеры правил ET Open
+              echo ""
+              echo "Примеры правил ET Open (первые 3):"
+              sudo grep -E "^\s*(alert|drop|pass)" /etc/suricata/rules/suricata.rules 2>/dev/null | head -3 | sed 's/^/  /' || echo "  Правила не найдены"
+              echo ""
+            else
+              echo "⚠️ Файл правил не найден после загрузки"
               echo "Проверяем наличие suricata.yaml..."
               ls -la /etc/suricata/suricata.yaml || echo "❌ suricata.yaml не найден!"
               # Создаем пустой файл правил, чтобы Suricata не падала

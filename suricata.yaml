@@ -56,6 +56,11 @@ app-layer:
       enabled: yes
     tls:
       enabled: yes
+    # Отключаем modbus, чтобы избежать ошибок при загрузке правил ET Open
+    # Правила modbus будут автоматически отключены suricata-update
+    modbus:
+      enabled: no
+      detection-enabled: no
 
 logging:
   default-log-format: "[%i] %t - (%f:%l) <%d> (%n) -- "
