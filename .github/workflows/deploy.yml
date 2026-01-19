@@ -612,29 +612,87 @@ jobs:
             sudo mkdir -p /var/run/suricata
             sudo chmod 755 /var/run/suricata
             
+            # Проверяем конфигурацию перед запуском
+            echo "Проверка конфигурации Suricata..."
+            if sudo suricata -T -c /etc/suricata/suricata.yaml > /tmp/suricata-test-before-start.log 2>&1; then
+              echo "✅ Конфигурация валидна"
+            else
+              echo "⚠️ Ошибки в конфигурации:"
+              sudo tail -20 /tmp/suricata-test-before-start.log
+              echo "Продолжаем запуск..."
+            fi
+            
             # Запускаем Suricata в фоновом режиме с unix socket для управления
-            sudo nohup suricata \
-              -c /etc/suricata/suricata.yaml \
-              -q 0 -q 1 -q 2 -q 3 \
-              -l /var/log/suricata \
-              --pidfile /var/run/suricata.pid \
-              --unix-socket \
-              > /var/log/suricata/startup.log 2>&1 &
+            echo "Запуск Suricata..."
+            # Сначала проверяем, что Suricata доступна
+            if ! command -v suricata >/dev/null 2>&1; then
+              echo "❌ Suricata не найдена в PATH!"
+              which suricata || echo "Команда which не нашла suricata"
+              exit 1
+            fi
+            
+            # Проверяем версию Suricata
+            echo "Версия Suricata:"
+            suricata -V || echo "Не удалось получить версию"
+            
+            # Используем прямой запуск через bash -c для правильной работы в фоне
+            # ВАЖНО: перенаправляем stderr в stdout для правильного логирования
+            sudo bash -c "cd / && suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3 -l /var/log/suricata --pidfile /var/run/suricata.pid --unix-socket >> /var/log/suricata/startup.log 2>&1 &"
+            
+            # Даем Suricata время на запуск
+            sleep 3
 
             # Ждем создания PID файла
             echo "Ожидание запуска Suricata..."
             for i in {1..30}; do
-              if [ -f /var/run/suricata.pid ]; then
+              # Сначала проверяем, запущен ли процесс Suricata
+              if pgrep -f "suricata.*-q" >/dev/null 2>&1; then
+                PID=$(pgrep -f "suricata.*-q" | head -1)
+                echo "✅ Suricata запущена (PID: $PID, найден через pgrep)"
+                echo "$PID" | sudo tee /var/run/suricata.pid >/dev/null
+                break
+              elif [ -f /var/run/suricata.pid ]; then
                 PID=$(cat /var/run/suricata.pid 2>/dev/null)
                 if kill -0 "$PID" 2>/dev/null; then
                   echo "✅ Suricata запущена (PID: $PID)"
                   break
+                else
+                  echo "⚠️ PID файл существует, но процесс не найден (попытка $i/30)"
                 fi
               fi
+              
+              # Проверяем логи на наличие ошибок
+              if [ -f /var/log/suricata/startup.log ]; then
+                if sudo grep -q "error\|Error\|ERROR\|failed\|Failed" /var/log/suricata/startup.log 2>/dev/null; then
+                  echo "⚠️ Обнаружены ошибки в логах запуска (попытка $i/30):"
+                  sudo grep -i "error\|failed" /var/log/suricata/startup.log 2>/dev/null | tail -3
+                fi
+              fi
+              
               if [ $i -eq 30 ]; then
                 echo "❌ Suricata не запустилась за 30 секунд"
-                echo "Логи запуска:"
+                echo ""
+                echo "=== ДИАГНОСТИКА ПРОБЛЕМЫ ЗАПУСКА ==="
+                echo "Логи запуска (последние 50 строк):"
                 sudo tail -50 /var/log/suricata/startup.log 2>/dev/null || echo "Логи недоступны"
+                echo ""
+                echo "Проверка процессов Suricata:"
+                ps aux | grep suricata | grep -v grep || echo "Процессы Suricata не найдены"
+                echo ""
+                echo "Проверка конфигурации:"
+                if [ -f /etc/suricata/suricata.yaml ]; then
+                  echo "  ✓ Конфигурация существует"
+                  echo "  Тест конфигурации:"
+                  sudo suricata -T -c /etc/suricata/suricata.yaml 2>&1 | tail -20
+                else
+                  echo "  ❌ Конфигурация не найдена!"
+                fi
+                echo ""
+                echo "Проверка правил:"
+                ls -la /etc/suricata/rules/ 2>/dev/null || echo "Директория правил не найдена"
+                echo ""
+                echo "Попытка запуска Suricata вручную для диагностики:"
+                sudo suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3 -l /var/log/suricata --pidfile /var/run/suricata.pid --unix-socket -v 2>&1 | head -20 || true
                 exit 1
               fi
               sleep 1
