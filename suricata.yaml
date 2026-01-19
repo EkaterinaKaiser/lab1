@@ -56,9 +56,12 @@ app-layer:
       enabled: yes
     tls:
       enabled: yes
-    # Отключаем modbus, чтобы избежать ошибок при загрузке правил ET Open
-    # Правила modbus будут автоматически отключены suricata-update
+    # Отключаем modbus и dnp3, чтобы избежать ошибок при загрузке правил ET Open
+    # Правила для этих протоколов будут автоматически отключены suricata-update
     modbus:
+      enabled: no
+      detection-enabled: no
+    dnp3:
       enabled: no
       detection-enabled: no
 
