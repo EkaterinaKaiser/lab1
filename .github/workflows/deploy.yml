@@ -286,10 +286,12 @@ jobs:
               # Показываем информацию о включенных источниках
               echo ""
               echo "Включенные источники правил:"
-              ENABLED_SOURCES=$(sudo suricata-update list-enabled-sources 2>/dev/null | grep -v "^$" || echo "")
+              ENABLED_SOURCES=$(sudo suricata-update list-enabled-sources 2>/dev/null | grep -E "^[a-z0-9]+/[a-z0-9-]+" | grep -v "^$" || echo "")
               if [ ! -z "$ENABLED_SOURCES" ]; then
-                echo "$ENABLED_SOURCES" | while read -r source; do
-                  echo "  ✓ $source"
+                echo "$ENABLED_SOURCES" | while IFS= read -r source; do
+                  [ -z "$source" ] && continue
+                  SOURCE_NAME=$(echo "$source" | awk '{print $1}' | head -1)
+                  [ ! -z "$SOURCE_NAME" ] && echo "  ✓ $SOURCE_NAME"
                 done
               else
                 echo "  ⚠️ Не удалось получить список источников"
@@ -384,19 +386,6 @@ jobs:
               echo "   Это нормально и не влияет на работу Suricata"
             fi
             echo ""
-              echo "✅ Конфигурация валидна"
-            else
-              echo "❌ Ошибка в конфигурации!"
-              echo "Последние строки лога:"
-              tail -30 /tmp/suricata-test.log || true
-              # Проверяем, есть ли критичные ошибки или только предупреждения
-              if grep -q "No rule files match" /tmp/suricata-test.log; then
-                echo "⚠️ Предупреждение: некоторые файлы правил не найдены, но это не критично"
-                # Продолжаем, если это только предупреждение о файлах правил
-              else
-                exit 1
-              fi
-            fi
 
             echo "✅ Правила обновлены и проверены"
           EOF
