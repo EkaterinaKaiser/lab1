@@ -40,6 +40,7 @@ outputs:
         - dns
         - tls
         - flow
+        - icmp
       json:
         pretty: no
       include-metadata: yes

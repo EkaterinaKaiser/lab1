@@ -329,6 +329,20 @@ jobs:
             if [ -f ~/lab-infrastructure/rules/custom_ioc.rules ]; then
               sudo cp ~/lab-infrastructure/rules/custom_ioc.rules /etc/suricata/rules/ 2>/dev/null || true
             fi
+            
+            # Копируем custom.rules на хост
+            if [ -f ~/lab-infrastructure/rules/custom.rules ]; then
+              sudo cp ~/lab-infrastructure/rules/custom.rules /etc/suricata/rules/ 2>/dev/null || true
+            fi
+            
+            # Копируем suricata.yaml на хост (если еще не скопирован)
+            if [ ! -f /etc/suricata/suricata.yaml ] && [ -f ~/lab-infrastructure/suricata.yaml ]; then
+              sudo cp ~/lab-infrastructure/suricata.yaml /etc/suricata/suricata.yaml
+            fi
+            
+            # Убеждаемся, что директория для логов существует
+            sudo mkdir -p /var/log/suricata
+            sudo chmod 755 /var/log/suricata
 
             # Проверяем наличие файлов правил
             echo "[*] Проверка файлов правил..."
@@ -390,62 +404,6 @@ jobs:
             echo "✅ Правила обновлены и проверены"
           EOF
 
-      - name: Start Suricata in IPS mode (nfq)
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-        run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
-          set -e
-          echo "=== Запуск Suricata в IPS-режиме ==="
-
-          sudo pkill -9 -f suricata 2>/dev/null || true
-          sudo rm -f /var/run/suricata.pid 2>/dev/null || true
-          sleep 1
-
-          echo "Запуск Suricata с принудительной загрузкой правил..."
-          setsid nohup sudo -b sh -c '
-            exec > /var/log/suricata/startup.log 2>&1
-            exec suricata \
-              -c /etc/suricata/suricata.yaml \
-              -q 0 \
-              --pidfile /var/run/suricata.pid \
-              --set logging.console.enabled=no
-          ' </dev/null >/dev/null 2>&1 &
-
-          # Ждём PID и инициализацию
-          for i in {1..20}; do
-            if [ -f /var/run/suricata.pid ]; then
-              PID=$(cat /var/run/suricata.pid)
-              echo "PID: $PID"
-              break
-            fi
-            sleep 0.5
-          done
-
-          if [ ! -f /var/run/suricata.pid ]; then
-            echo "❌ PID не создан"
-            cat /var/log/suricata/startup.log 2>/dev/null || echo "(лог пуст)"
-            exit 1
-          fi
-
-          # Ждём загрузки правил (появления alert/drop в логе)
-          timeout 20 bash -c '
-            while ! sudo grep -q "rules successfully loaded" /var/log/suricata/suricata.log &&
-                  ! sudo grep -q "\"rules_loaded\":[1-9]" /var/log/suricata/eve.json 2>/dev/null; do
-              kill -0 "$PID" || exit 1
-              sleep 0.5
-            done
-          ' || {
-            echo "❌ Правила не загружены"
-            sudo tail -n 50 /var/log/suricata/suricata.log
-            exit 1
-          }
-
-          echo "✅ Suricata запущена и загрузила правила"
-          exit 0
-          EOF
-
       - name: Deploy containers
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -457,14 +415,15 @@ jobs:
 
             docker network create labnet 2>/dev/null || true
 
-            docker compose up -d --build
+            # Сначала запускаем только attacker и victim (без Suricata)
+            docker compose up -d --build attacker victim
 
-            echo "Контейнеры запущены:"
+            echo "Контейнеры attacker и victim запущены:"
             docker compose ps
             
             # Ждем, пока контейнеры полностью инициализируются
             echo "Ожидание инициализации контейнеров..."
-            sleep 10
+            sleep 5
             
             # Проверяем, что HTTP сервер запустился
             echo "Проверка готовности HTTP сервера..."
@@ -517,13 +476,146 @@ jobs:
           sudo iptables -N PRE-SURICATA
           sudo iptables -A DOCKER-USER -j PRE-SURICATA
 
-          # Добавляем правила для bridge
-          sudo iptables -A PRE-SURICATA -i "$BRIDGE_NAME" -j NFQUEUE --queue-num 0 --queue-bypass
-          sudo iptables -A PRE-SURICATA -o "$BRIDGE_NAME" -j NFQUEUE --queue-num 0 --queue-bypass
+          # Добавляем правила для bridge (балансировка между очередями 0-3)
+          # Suricata запускается с -q 0 -q 1 -q 2 -q 3, поэтому настраиваем все очереди
+          sudo iptables -A PRE-SURICATA -i "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3 --queue-bypass
+          sudo iptables -A PRE-SURICATA -o "$BRIDGE_NAME" -j NFQUEUE --queue-balance 0:3 --queue-bypass
 
-          echo "✅ iptables настроены"
+          echo "✅ iptables настроены для NFQUEUE (очереди 0-3)"
           sudo iptables -L DOCKER-USER -n -v
+          echo ""
+          echo "Проверка правил NFQUEUE:"
+          sudo iptables -L PRE-SURICATA -n -v
           exit 0
+          EOF
+
+      - name: Start Suricata on host
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
+            set -e
+            cd ~/lab-infrastructure
+
+            echo "=== Запуск Suricata на хосте в режиме IPS с NFQUEUE ==="
+            
+            # Убеждаемся, что старые процессы Suricata остановлены
+            echo "Остановка старых процессов Suricata..."
+            sudo pkill -9 -f suricata 2>/dev/null || true
+            sudo rm -f /var/run/suricata.pid 2>/dev/null || true
+            sleep 2
+
+            # Проверяем, что Suricata установлена на хосте
+            if ! command -v suricata >/dev/null 2>&1; then
+              echo "❌ Suricata не установлена на хосте!"
+              echo "Установка Suricata..."
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq suricata suricata-update || {
+                echo "❌ Не удалось установить Suricata"
+                exit 1
+              }
+            fi
+
+            # Проверяем, что конфигурация и правила на месте
+            if [ ! -f /etc/suricata/suricata.yaml ]; then
+              echo "❌ Конфигурация Suricata не найдена в /etc/suricata/suricata.yaml"
+              exit 1
+            fi
+
+            if [ ! -f /etc/suricata/rules/suricata.rules ]; then
+              echo "⚠️ Правила suricata.rules не найдены, создаем пустой файл..."
+              sudo touch /etc/suricata/rules/suricata.rules
+            fi
+
+            # Убеждаемся, что директория для логов существует
+            sudo mkdir -p /var/log/suricata
+            sudo chmod 755 /var/log/suricata
+
+            # Получаем bridge интерфейс для диагностики
+            BRIDGE_NAME="br-$(docker network inspect lab-infrastructure_labnet -f '{{.Id}}' 2>/dev/null | cut -c1-12 || echo "")"
+            echo "Bridge интерфейс: $BRIDGE_NAME"
+
+            # Проверяем NFQUEUE
+            echo ""
+            echo "Проверка правил NFQUEUE:"
+            if sudo iptables -L PRE-SURICATA -n -v 2>/dev/null | grep -q "NFQUEUE"; then
+              echo "✅ Правила NFQUEUE найдены:"
+              sudo iptables -L PRE-SURICATA -n -v 2>/dev/null | grep "NFQUEUE"
+            else
+              echo "⚠️ Правила NFQUEUE не найдены, но продолжаем запуск..."
+            fi
+
+            # Запускаем Suricata в режиме IPS с NFQUEUE (очереди 0-3)
+            echo ""
+            echo "Запуск Suricata в режиме IPS с NFQUEUE (очереди 0-3)..."
+            echo "Команда: suricata -c /etc/suricata/suricata.yaml -q 0 -q 1 -q 2 -q 3 -l /var/log/suricata --pidfile /var/run/suricata.pid"
+            
+            # Запускаем Suricata в фоновом режиме
+            sudo nohup suricata \
+              -c /etc/suricata/suricata.yaml \
+              -q 0 -q 1 -q 2 -q 3 \
+              -l /var/log/suricata \
+              --pidfile /var/run/suricata.pid \
+              > /var/log/suricata/startup.log 2>&1 &
+
+            # Ждем создания PID файла
+            echo "Ожидание запуска Suricata..."
+            for i in {1..30}; do
+              if [ -f /var/run/suricata.pid ]; then
+                PID=$(cat /var/run/suricata.pid 2>/dev/null)
+                if kill -0 "$PID" 2>/dev/null; then
+                  echo "✅ Suricata запущена (PID: $PID)"
+                  break
+                fi
+              fi
+              if [ $i -eq 30 ]; then
+                echo "❌ Suricata не запустилась за 30 секунд"
+                echo "Логи запуска:"
+                sudo tail -50 /var/log/suricata/startup.log 2>/dev/null || echo "Логи недоступны"
+                exit 1
+              fi
+              sleep 1
+            done
+
+            # Ждем загрузки правил
+            echo "Ожидание загрузки правил Suricata..."
+            for i in {1..30}; do
+              if sudo grep -q "rules successfully loaded\|Engine started" /var/log/suricata/suricata.log 2>/dev/null; then
+                echo "✅ Правила Suricata загружены"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "⚠️ Правила не загружены за 30 секунд, но продолжаем..."
+                sudo tail -20 /var/log/suricata/suricata.log 2>/dev/null || true
+              fi
+              sleep 1
+            done
+
+            # Проверяем статус
+            echo ""
+            echo "=== Статус Suricata ==="
+            if [ -f /var/run/suricata.pid ]; then
+              PID=$(cat /var/run/suricata.pid)
+              if kill -0 "$PID" 2>/dev/null; then
+                echo "✅ Suricata работает (PID: $PID)"
+                ps aux | grep suricata | grep -v grep | head -1
+                echo ""
+                echo "Команда запуска:"
+                ps aux | grep suricata | grep -v grep | awk '{for(i=11;i<=NF;i++) printf "%s ", $i; print ""}'
+              else
+                echo "❌ Процесс Suricata завершен"
+                sudo tail -50 /var/log/suricata/suricata.log 2>/dev/null || true
+                exit 1
+              fi
+            else
+              echo "❌ PID файл не найден"
+              exit 1
+            fi
+
+            echo ""
+            echo "Логи Suricata (последние 10 строк):"
+            sudo tail -10 /var/log/suricata/suricata.log 2>/dev/null || echo "Логи недоступны"
           EOF
 
       - name: Verify deployment
@@ -864,31 +956,19 @@ jobs:
             echo "=========================================="
             echo ""
 
-            # Определяем, где искать логи Suricata
+            # Определяем, где искать логи Suricata (только на хосте)
             EVE_JSON_PATH=""
             LOG_DIR=""
             
-            # Проверяем разные возможные места для логов
-            echo "→ Поиск логов Suricata..."
+            # Проверяем логи Suricata на хосте
+            echo "→ Поиск логов Suricata на хосте..."
             
-            # 1. Проверяем на хосте
+            # 1. Проверяем на хосте (основное место)
             if [ -f /var/log/suricata/eve.json ]; then
               EVE_JSON_PATH="/var/log/suricata/eve.json"
               LOG_DIR="/var/log/suricata"
               echo "  ✓ Найдены логи на хосте: $EVE_JSON_PATH"
-            # 2. Проверяем в контейнере suricata
-            elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^suricata$"; then
-              echo "  → Suricata запущена в контейнере, проверяем логи в контейнере..."
-              if docker exec suricata test -f /var/log/suricata/eve.json 2>/dev/null; then
-                EVE_JSON_PATH="/var/log/suricata/eve.json"
-                LOG_DIR="/var/log/suricata"
-                echo "  ✓ Найдены логи в контейнере suricata"
-              elif docker exec suricata test -f /logs/eve.json 2>/dev/null; then
-                EVE_JSON_PATH="/logs/eve.json"
-                LOG_DIR="/logs"
-                echo "  ✓ Найдены логи в контейнере (альтернативный путь)"
-              fi
-            # 3. Проверяем в директории проекта
+            # 2. Проверяем в директории проекта (если логи были скопированы)
             elif [ -f ~/lab-infrastructure/logs/eve.json ]; then
               EVE_JSON_PATH="~/lab-infrastructure/logs/eve.json"
               LOG_DIR="~/lab-infrastructure/logs"
@@ -907,10 +987,13 @@ jobs:
                 PID=$(pgrep -f "suricata.*-c" | head -1)
                 echo "  ✓ Suricata работает на хосте (PID: $PID)"
                 ps aux | grep suricata | grep -v grep | head -3
+                echo "  Команда запуска:"
+                ps aux | grep suricata | grep -v grep | head -1 | awk '{for(i=11;i<=NF;i++) printf "%s ", $i; print ""}'
               elif [ -f /var/run/suricata.pid ]; then
                 PID=$(cat /var/run/suricata.pid 2>/dev/null)
                 if kill -0 "$PID" 2>/dev/null; then
                   echo "  ✓ Suricata работает на хосте (PID: $PID из файла)"
+                  ps aux | grep "^[^ ]* *$PID " | head -1 || true
                 else
                   echo "  ⚠️ PID файл существует, но процесс не найден"
                 fi
@@ -918,35 +1001,60 @@ jobs:
                 echo "  ⚠️ Suricata не запущена на хосте"
               fi
               
-              # Проверяем контейнеры
+              # Проверяем NFQUEUE
               echo ""
-              echo "2. Проверка контейнеров:"
-              if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^suricata$"; then
-                echo "  ✓ Контейнер suricata запущен"
-                docker ps --filter "name=suricata" --format "  Статус: {{.Status}}"
-                echo "  Логи контейнера (последние 20 строк):"
-                docker logs suricata 2>&1 | tail -20 || echo "  Не удалось получить логи контейнера"
+              echo "2. Проверка NFQUEUE (критично для работы IPS):"
+              if sudo iptables -L FORWARD -n -v 2>/dev/null | grep -q "NFQUEUE"; then
+                echo "  ✓ Правила NFQUEUE найдены в FORWARD:"
+                sudo iptables -L FORWARD -n -v 2>/dev/null | grep "NFQUEUE" | head -5
+                NFQUEUE_PKTS=$(sudo iptables -L FORWARD -n -v 2>/dev/null | grep "NFQUEUE" | awk '{sum+=$1} END {print sum}')
+                echo "  Пакетов обработано через NFQUEUE: $NFQUEUE_PKTS"
               else
-                echo "  ⚠️ Контейнер suricata не запущен"
-                echo "  Запущенные контейнеры:"
-                docker ps --format "  - {{.Names}}" 2>/dev/null || echo "  Docker недоступен"
+                echo "  ❌ КРИТИЧНО: Правила NFQUEUE НЕ найдены!"
+                echo "  Suricata не будет видеть трафик без NFQUEUE"
+                echo "  Проверьте, что скрипт setup-nfqueue.sh был выполнен"
               fi
               
-              # Проверяем директории логов
+              # Проверяем, что Suricata слушает NFQUEUE
               echo ""
-              echo "3. Проверка директорий логов:"
-              for dir in /var/log/suricata ~/lab-infrastructure/logs ./logs; do
-                if [ -d "$dir" ]; then
-                  echo "  ✓ Директория существует: $dir"
-                  ls -la "$dir" 2>/dev/null | head -5 || true
-                fi
-              done
+              echo "3. Проверка, что Suricata слушает NFQUEUE:"
+              if pgrep -f "suricata.*-q" >/dev/null 2>&1; then
+                echo "  ✓ Suricata запущена с опцией -q (NFQUEUE)"
+                ps aux | grep suricata | grep -E "\-q [0-9]" | head -1 || true
+              else
+                echo "  ⚠️ Suricata не запущена с опцией -q (NFQUEUE)"
+                echo "  Suricata должна запускаться с: suricata -q 0 -q 1 -q 2 -q 3 ..."
+              fi
+              
+              # Проверяем директорию логов
+              echo ""
+              echo "4. Проверка директории логов на хосте:"
+              if [ -d /var/log/suricata ]; then
+                echo "  ✓ Директория /var/log/suricata существует"
+                echo "  Содержимое:"
+                sudo ls -lah /var/log/suricata/ 2>/dev/null | head -10 || echo "  Не удалось прочитать директорию"
+                echo ""
+                echo "  Размер eve.json:"
+                sudo ls -lh /var/log/suricata/eve.json 2>/dev/null || echo "  Файл eve.json не найден"
+              else
+                echo "  ⚠️ Директория /var/log/suricata не существует"
+                echo "  Suricata должна создавать эту директорию при запуске"
+              fi
+              
               
               echo ""
               echo "⚠️ Логи Suricata не найдены. Возможные причины:"
-              echo "  - Suricata не запущена"
+              echo "  - Suricata не запущена (проверьте этап 'Start Suricata in IPS mode')"
+              echo "  - NFQUEUE не настроен (проверьте этап 'Configure iptables for Suricata IPS')"
+              echo "  - Suricata не видит трафик (проверьте правила iptables)"
               echo "  - Логи пишутся в другое место"
               echo "  - Suricata еще не обработала трафик"
+              echo ""
+              echo "Рекомендации:"
+              echo "  1. Убедитесь, что Suricata запущена: ps aux | grep suricata"
+              echo "  2. Проверьте NFQUEUE: sudo iptables -L FORWARD -n -v | grep NFQUEUE"
+              echo "  3. Проверьте логи Suricata: sudo tail -f /var/log/suricata/suricata.log"
+              echo "  4. Проверьте, что трафик проходит: docker exec attacker ping -c 1 victim"
               echo ""
               echo "Продолжаем без вывода логов..."
               EVE_SIZE=0
@@ -983,9 +1091,6 @@ jobs:
             echo "📊 Всего событий в eve.json: $EVE_SIZE"
             echo ""
 
-            echo "📊 Всего событий в eve.json: $EVE_SIZE"
-            echo ""
-
             # Устанавливаем jq, если его нет
             if ! command -v jq >/dev/null 2>&1; then
               echo "Установка jq для форматирования JSON..."
@@ -995,12 +1100,8 @@ jobs:
             # Выводим статистику событий
             echo "=== Статистика событий по типам ==="
             
-            # Определяем команду для чтения логов (с учетом контейнера)
-            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^suricata$" && [ "$EVE_JSON_PATH" = "/var/log/suricata/eve.json" ]; then
-              CAT_CMD="docker exec suricata cat $EVE_JSON_PATH"
-            else
-              CAT_CMD="sudo cat $EVE_JSON_PATH"
-            fi
+            # Команда для чтения логов с хоста
+            CAT_CMD="sudo cat $EVE_JSON_PATH"
             
             if command -v jq >/dev/null 2>&1; then
               echo "События drop (блокировки):"

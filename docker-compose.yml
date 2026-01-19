@@ -34,25 +34,6 @@ services:
         apt-get install -y -qq iputils-ping curl netcat-openbsd nmap wget tcpdump &&
         tail -f /dev/null
       "
-
-  suricata:
-    image: jasonish/suricata:latest
-    container_name: suricata
-    hostname: suricata
-    privileged: true
-    # Используем network_mode: host для доступа к NFQUEUE и bridge интерфейсам
-    network_mode: host
-    volumes:
-      - ./suricata.yaml:/etc/suricata/suricata.yaml:ro
-      - ./rules:/etc/suricata/rules:ro
-      - ./logs:/var/log/suricata
-      - ./start-suricata-ips.sh:/start-suricata-ips.sh:ro
-    depends_on:
-      - victim
-      - attacker
-    entrypoint: []
-    # Запуск Suricata в режиме IPS с NFQUEUE
-    command: ["/bin/sh", "/start-suricata-ips.sh"]
       
 networks:
   labnet:
