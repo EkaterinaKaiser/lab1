@@ -333,12 +333,27 @@ jobs:
             # Копируем custom.rules на хост
             if [ -f ~/lab-infrastructure/rules/custom.rules ]; then
               sudo cp ~/lab-infrastructure/rules/custom.rules /etc/suricata/rules/ 2>/dev/null || true
+              echo "[*] custom.rules скопирован на хост"
+            else
+              echo "⚠️ Файл ~/lab-infrastructure/rules/custom.rules не найден!"
             fi
             
             # Копируем suricata.yaml на хост (если еще не скопирован)
             if [ ! -f /etc/suricata/suricata.yaml ] && [ -f ~/lab-infrastructure/suricata.yaml ]; then
               sudo cp ~/lab-infrastructure/suricata.yaml /etc/suricata/suricata.yaml
+              echo "[*] suricata.yaml скопирован на хост"
             fi
+            
+            # Проверяем, что все файлы правил на месте
+            echo "[*] Проверка файлов правил на хосте:"
+            for rule_file in custom.rules custom_ioc.rules suricata.rules; do
+              if [ -f "/etc/suricata/rules/$rule_file" ]; then
+                COUNT=$(sudo grep -vE "^\s*#|^\s*$" "/etc/suricata/rules/$rule_file" 2>/dev/null | grep -E "^\s*(alert|drop|pass)" | wc -l || echo "0")
+                echo "  ✓ $rule_file: $COUNT правил"
+              else
+                echo "  ⚠️ $rule_file не найден"
+              fi
+            done
             
             # Убеждаемся, что директория для логов существует
             sudo mkdir -p /var/log/suricata
@@ -583,6 +598,14 @@ jobs:
             for i in {1..30}; do
               if sudo grep -q "rules successfully loaded\|Engine started" /var/log/suricata/suricata.log 2>/dev/null; then
                 echo "✅ Правила Suricata загружены"
+                # Проверяем, что правило ICMP загружено
+                if sudo grep -q "sid:1000001\|ICMP blocked" /var/log/suricata/suricata.log 2>/dev/null; then
+                  echo "✅ Правило ICMP (sid:1000001) найдено в логах"
+                else
+                  echo "⚠️ Правило ICMP (sid:1000001) не найдено в логах загрузки"
+                  echo "Проверяем количество загруженных правил:"
+                  sudo grep -E "rules successfully loaded|signatures processed" /var/log/suricata/suricata.log 2>/dev/null | tail -3
+                fi
                 break
               fi
               if [ $i -eq 30 ]; then
@@ -678,22 +701,122 @@ jobs:
             # Пытаемся отправить ICMP пакет
             if docker exec attacker timeout 3 ping -c 1 -W 1 victim &>/dev/null; then
               echo "❌ ICMP прошёл — Suricata НЕ блокирует!"
-              echo "  Диагностика:"
-              echo "  Последние события Suricata (ICMP/drop):"
-              sudo tail -n 30 /var/log/suricata/eve.json 2>/dev/null | grep -E '"icmp"|"drop"|"alert"' | tail -5 | jq -r '.event_type, .alert.signature, .src_ip, .dest_ip' 2>/dev/null || echo "  Нет событий ICMP/drop"
-              echo "  Проверка правил ICMP:"
-              sudo grep -i icmp /etc/suricata/rules/*.rules 2>/dev/null | head -5 || echo "  Правила ICMP не найдены"
-              echo "  Статус Suricata:"
+              echo ""
+              echo "  === ДЕТАЛЬНАЯ ДИАГНОСТИКА ==="
+              
+              # 1. Проверка NFQUEUE
+              echo ""
+              echo "  1. Проверка правил NFQUEUE в iptables:"
+              if sudo iptables -L PRE-SURICATA -n -v 2>/dev/null | grep -q "NFQUEUE"; then
+                echo "    ✓ Правила NFQUEUE найдены:"
+                sudo iptables -L PRE-SURICATA -n -v 2>/dev/null | grep "NFQUEUE"
+                NFQUEUE_PKTS=$(sudo iptables -L PRE-SURICATA -n -v 2>/dev/null | grep "NFQUEUE" | awk '{sum+=$1} END {print sum}')
+                echo "    Пакетов обработано через NFQUEUE: $NFQUEUE_PKTS"
+                if [ "$NFQUEUE_PKTS" -eq 0 ]; then
+                  echo "    ⚠️ КРИТИЧНО: Через NFQUEUE не прошло ни одного пакета!"
+                  echo "    Трафик не попадает в Suricata!"
+                fi
+              else
+                echo "    ❌ КРИТИЧНО: Правила NFQUEUE НЕ найдены!"
+                echo "    Suricata не видит трафик без NFQUEUE!"
+              fi
+              
+              # 2. Проверка статуса Suricata
+              echo ""
+              echo "  2. Проверка статуса Suricata:"
               if [ -f /var/run/suricata.pid ]; then
                 PID=$(cat /var/run/suricata.pid)
                 if kill -0 "$PID" 2>/dev/null; then
-                  echo "  Suricata работает (PID: $PID)"
+                  echo "    ✓ Suricata работает (PID: $PID)"
+                  echo "    Команда запуска:"
+                  ps aux | grep "^[^ ]* *$PID " | awk '{for(i=11;i<=NF;i++) printf "      %s ", $i; print ""}'
+                  # Проверяем, запущена ли с NFQUEUE
+                  if ps aux | grep "^[^ ]* *$PID " | grep -q "\-q"; then
+                    echo "    ✓ Suricata запущена с опцией -q (NFQUEUE)"
+                  else
+                    echo "    ❌ Suricata НЕ запущена с опцией -q (NFQUEUE)!"
+                  fi
                 else
-                  echo "  ⚠️ Процесс Suricata не найден"
+                  echo "    ❌ Процесс Suricata не найден"
                 fi
               else
-                echo "  ⚠️ PID файл не найден"
+                echo "    ❌ PID файл не найден"
               fi
+              
+              # 3. Проверка правил
+              echo ""
+              echo "  3. Проверка правил ICMP:"
+              if [ -f /etc/suricata/rules/custom.rules ]; then
+                echo "    Файл custom.rules существует"
+                ICMP_RULE=$(sudo grep -i "drop.*icmp" /etc/suricata/rules/custom.rules)
+                if [ -n "$ICMP_RULE" ]; then
+                  echo "    ✓ Правило найдено: $ICMP_RULE"
+                else
+                  echo "    ❌ Правило drop icmp не найдено в custom.rules!"
+                fi
+              else
+                echo "    ❌ Файл custom.rules не найден!"
+              fi
+              
+              # 4. Проверка событий в eve.json
+              echo ""
+              echo "  4. Проверка событий в eve.json:"
+              if [ -f /var/log/suricata/eve.json ]; then
+                EVE_SIZE=$(sudo wc -l < /var/log/suricata/eve.json 2>/dev/null || echo "0")
+                echo "    Размер eve.json: $EVE_SIZE строк"
+                if [ "$EVE_SIZE" -eq 0 ]; then
+                  echo "    ⚠️ Файл eve.json пуст - Suricata не видит трафик!"
+                else
+                  echo "    Последние события (ICMP/drop):"
+                  sudo tail -n 50 /var/log/suricata/eve.json 2>/dev/null | \
+                    grep -E '"icmp"|"drop"|"alert"' | tail -5 | \
+                    jq -r 'select(.event_type=="drop" or .event_type=="alert" or .proto=="ICMP" or .proto=="IPv6-ICMP") | "      \(.timestamp // "N/A") | \(.event_type // "N/A") | src:\(.src_ip // "N/A") | dst:\(.dest_ip // "N/A") | proto:\(.proto // "N/A") | sig:\(.alert.signature // "N/A")"' 2>/dev/null || \
+                    sudo tail -n 50 /var/log/suricata/eve.json 2>/dev/null | grep -E '"icmp"|"drop"|"alert"' | tail -5
+                fi
+              else
+                echo "    ❌ Файл eve.json не найден!"
+              fi
+              
+              # 5. Проверка логов Suricata
+              echo ""
+              echo "  5. Проверка логов Suricata (suricata.log):"
+              if [ -f /var/log/suricata/suricata.log ]; then
+                echo "    Последние строки с упоминанием ICMP или drop:"
+                sudo grep -i "icmp\|drop" /var/log/suricata/suricata.log 2>/dev/null | tail -5 || echo "    Нет упоминаний ICMP/drop в логах"
+                echo ""
+                echo "    Последние 10 строк лога:"
+                sudo tail -10 /var/log/suricata/suricata.log 2>/dev/null || echo "    Лог недоступен"
+              else
+                echo "    ⚠️ Файл suricata.log не найден"
+              fi
+              
+              # 6. Проверка IP адресов контейнеров
+              echo ""
+              echo "  6. Проверка IP адресов контейнеров:"
+              ATTACKER_IP=$(docker inspect attacker 2>/dev/null | jq -r '.[0].NetworkSettings.Networks.labnet.IPAddress // .[0].NetworkSettings.Networks.lab-infrastructure_labnet.IPAddress // empty')
+              VICTIM_IP=$(docker inspect victim 2>/dev/null | jq -r '.[0].NetworkSettings.Networks.labnet.IPAddress // .[0].NetworkSettings.Networks.lab-infrastructure_labnet.IPAddress // empty')
+              echo "    attacker: $ATTACKER_IP"
+              echo "    victim: $VICTIM_IP"
+              if [ -n "$VICTIM_IP" ]; then
+                echo "    Проверка, входит ли victim IP ($VICTIM_IP) в HOME_NET (172.16.0.0/12):"
+                # Простая проверка: 172.16.0.0/12 включает 172.16.0.0 - 172.31.255.255
+                VICTIM_OCTET1=$(echo "$VICTIM_IP" | cut -d. -f1)
+                VICTIM_OCTET2=$(echo "$VICTIM_IP" | cut -d. -f2)
+                if [ "$VICTIM_OCTET1" = "172" ] && [ "$VICTIM_OCTET2" -ge 16 ] && [ "$VICTIM_OCTET2" -le 31 ]; then
+                  echo "    ✓ IP входит в HOME_NET"
+                else
+                  echo "    ⚠️ IP НЕ входит в HOME_NET (172.16.0.0/12)!"
+                  echo "    Правило может не сработать, если HOME_NET не включает этот IP"
+                fi
+              fi
+              
+              echo ""
+              echo "  === РЕКОМЕНДАЦИИ ==="
+              echo "  1. Убедитесь, что правила NFQUEUE настроены ДО запуска Suricata"
+              echo "  2. Проверьте, что Suricata запущена с опцией -q (NFQUEUE)"
+              echo "  3. Проверьте, что трафик проходит через NFQUEUE (счетчики пакетов > 0)"
+              echo "  4. Проверьте, что правило загружено в Suricata (логи загрузки правил)"
+              echo ""
               exit 1
             else
               echo "✅ ICMP заблокирован"
