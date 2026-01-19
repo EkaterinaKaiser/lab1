@@ -11,8 +11,17 @@ vars:
   port-groups:
     HTTP_PORTS: "80,443,8080,8443,8000,8888,8880"
 
+# Настройки NFQUEUE для режима IPS (Intrusion Prevention System)
 nfq:
   mode: accept
+  repeat-mark: 1
+  repeat-mask: 1
+  bypass-mark: 2
+  bypass-mask: 2
+  # Балансировка нагрузки между несколькими очередями
+  queue-balance: [0, 1, 2, 3]
+  # Максимальное количество пакетов в очереди
+  queue-max-len: 1024
 
 default-rule-path: /etc/suricata/rules
 rule-files:

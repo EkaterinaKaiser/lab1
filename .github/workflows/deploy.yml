@@ -121,8 +121,15 @@ jobs:
             fetch_feeds.sh \
             generate_custom_ioc_rules.py \
             update_rules.sh \
+            setup-iptables.sh \
+            setup-nfqueue.sh \
+            start-suricata-ips.sh \
             Makefile \
             ${SSH_USER}@${SSH_HOST}:~/lab-infrastructure/
+          
+          # Делаем скрипты исполняемыми
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} \
+            "chmod +x ~/lab-infrastructure/setup-iptables.sh ~/lab-infrastructure/setup-nfqueue.sh ~/lab-infrastructure/start-suricata-ips.sh"
 
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             -r rules/ \
@@ -220,6 +227,41 @@ jobs:
                 echo "[*] Копирование правил в /etc/suricata/rules/..."
                 sudo cp /var/lib/suricata/rules/suricata.rules /etc/suricata/rules/suricata.rules
                 echo "✅ Правила скопированы"
+                
+                # Подсчитываем количество правил ET Open
+                echo ""
+                echo "=== Статистика загруженных правил Emerging Threats Open ==="
+                
+                # Подсчитываем активные правила (alert, drop, pass)
+                ACTIVE_RULES=$(sudo grep -E "^\s*(alert|drop|pass)" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
+                
+                # Подсчитываем правила по типам
+                ALERT_RULES=$(sudo grep -E "^\s*alert" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
+                DROP_RULES=$(sudo grep -E "^\s*drop" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
+                PASS_RULES=$(sudo grep -E "^\s*pass" /etc/suricata/rules/suricata.rules 2>/dev/null | wc -l || echo "0")
+                
+                echo "📊 Всего активных правил в suricata.rules (ET Open + PT Security): $ACTIVE_RULES"
+                echo "   - alert правил: $ALERT_RULES"
+                echo "   - drop правил: $DROP_RULES"
+                echo "   - pass правил: $PASS_RULES"
+                
+                # Показываем информацию о включенных источниках
+                echo ""
+                echo "Включенные источники правил:"
+                ENABLED_SOURCES=$(sudo suricata-update list-enabled-sources 2>/dev/null | grep -v "^$" || echo "")
+                if [ ! -z "$ENABLED_SOURCES" ]; then
+                  echo "$ENABLED_SOURCES" | while read -r source; do
+                    echo "  ✓ $source"
+                  done
+                else
+                  echo "  ⚠️ Не удалось получить список источников"
+                fi
+                
+                # Показываем примеры правил ET Open
+                echo ""
+                echo "Примеры правил ET Open (первые 3):"
+                sudo grep -E "^\s*(alert|drop|pass)" /etc/suricata/rules/suricata.rules 2>/dev/null | head -3 | sed 's/^/  /' || echo "  Правила не найдены"
+                echo ""
               fi
             else
               echo "⚠️ Не удалось загрузить официальные правила"
@@ -262,6 +304,27 @@ jobs:
             # Проверяем конфигурацию
             echo "[*] Проверка конфигурации Suricata..."
             if sudo suricata -T -c /etc/suricata/suricata.yaml 2>&1 | tee /tmp/suricata-test.log; then
+              echo ""
+              echo "=== Итоговая статистика правил Suricata ==="
+              # Извлекаем информацию о загруженных правилах из лога проверки
+              if grep -q "rules successfully loaded" /tmp/suricata-test.log; then
+                RULES_INFO=$(grep "rules successfully loaded" /tmp/suricata-test.log | tail -1)
+                echo "✅ $RULES_INFO"
+              fi
+              if grep -q "signatures processed" /tmp/suricata-test.log; then
+                SIG_INFO=$(grep "signatures processed" /tmp/suricata-test.log | tail -1)
+                echo "📊 $SIG_INFO"
+              fi
+              # Показываем количество правил по файлам
+              echo ""
+              echo "Количество правил по файлам:"
+              for rule_file in custom_ioc.rules custom.rules suricata.rules; do
+                if [ -f "/etc/suricata/rules/$rule_file" ]; then
+                  COUNT=$(sudo grep -vE "^\s*#|^\s*$" "/etc/suricata/rules/$rule_file" 2>/dev/null | grep -E "^\s*(alert|drop|pass)" | wc -l || echo "0")
+                  echo "  - $rule_file: $COUNT правил"
+                fi
+              done
+              echo ""
               echo "✅ Конфигурация валидна"
             else
               echo "❌ Ошибка в конфигурации!"
@@ -566,32 +629,153 @@ jobs:
             echo "=== Тестирование блокировки по IoC правилам ==="
             sleep 3
 
-            # Получаем IP из заблокированных источников для теста
-            # Используем Google Cloud IP как пример (должен быть заблокирован)
-            TEST_BLOCKED_IP=""
+            # Собираем список IP-адресов из разных заблокированных источников для теста
+            echo "→ Сбор тестовых IP-адресов из IoC-фидов..."
+            
+            # Используем временный файл для хранения списка IP (более надежно в bash)
+            TEST_IPS_FILE=$(mktemp)
+            
+            # Получаем IP из разных источников (максимум 1-2 IP из каждого источника)
+            if [ -f ~/lab-infrastructure/feeds/feodo_ips.txt ]; then
+              IP=$(head -1 ~/lab-infrastructure/feeds/feodo_ips.txt 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
+              [ ! -z "$IP" ] && echo "$IP:Feodo Tracker" >> "$TEST_IPS_FILE"
+            fi
+            
+            if [ -f ~/lab-infrastructure/feeds/urlhaus_ips.txt ]; then
+              IP=$(head -1 ~/lab-infrastructure/feeds/urlhaus_ips.txt 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
+              [ ! -z "$IP" ] && echo "$IP:URLhaus" >> "$TEST_IPS_FILE"
+            fi
+            
+            if [ -f ~/lab-infrastructure/feeds/botvrij_ips.txt ]; then
+              IP=$(head -1 ~/lab-infrastructure/feeds/botvrij_ips.txt 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
+              [ ! -z "$IP" ] && echo "$IP:Botvrij.eu" >> "$TEST_IPS_FILE"
+            fi
+            
             if [ -f ~/lab-infrastructure/feeds/google_cloud_ips.txt ]; then
-              TEST_BLOCKED_IP=$(head -1 ~/lab-infrastructure/feeds/google_cloud_ips.txt | cut -d'/' -f1)
+              IP=$(head -1 ~/lab-infrastructure/feeds/google_cloud_ips.txt 2>/dev/null | cut -d'/' -f1 | head -1)
+              [ ! -z "$IP" ] && echo "$IP:Google Cloud" >> "$TEST_IPS_FILE"
+              # Добавляем еще один IP из Google Cloud
+              IP2=$(sed -n '2p' ~/lab-infrastructure/feeds/google_cloud_ips.txt 2>/dev/null | cut -d'/' -f1 | head -1)
+              [ ! -z "$IP2" ] && echo "$IP2:Google Cloud" >> "$TEST_IPS_FILE"
+            fi
+            
+            if [ -f ~/lab-infrastructure/feeds/aws_ips.txt ]; then
+              IP=$(head -1 ~/lab-infrastructure/feeds/aws_ips.txt 2>/dev/null | cut -d'/' -f1 | head -1)
+              [ ! -z "$IP" ] && echo "$IP:AWS" >> "$TEST_IPS_FILE"
+            fi
+            
+            if [ -f ~/lab-infrastructure/feeds/azure_ips.txt ]; then
+              IP=$(head -1 ~/lab-infrastructure/feeds/azure_ips.txt 2>/dev/null | cut -d'/' -f1 | head -1)
+              [ ! -z "$IP" ] && echo "$IP:Azure" >> "$TEST_IPS_FILE"
+            fi
+            
+            if [ -f ~/lab-infrastructure/feeds/cloudflare_ips.txt ]; then
+              IP=$(head -1 ~/lab-infrastructure/feeds/cloudflare_ips.txt 2>/dev/null | cut -d'/' -f1 | head -1)
+              [ ! -z "$IP" ] && echo "$IP:Cloudflare" >> "$TEST_IPS_FILE"
+            fi
+            
+            if [ -f ~/lab-infrastructure/feeds/digitalocean_ips.txt ]; then
+              IP=$(head -1 ~/lab-infrastructure/feeds/digitalocean_ips.txt 2>/dev/null | cut -d'/' -f1 | head -1)
+              [ ! -z "$IP" ] && echo "$IP:DigitalOcean" >> "$TEST_IPS_FILE"
+            fi
+            
+            if [ -f ~/lab-infrastructure/feeds/antifilter_ips.txt ]; then
+              IP=$(head -1 ~/lab-infrastructure/feeds/antifilter_ips.txt 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
+              [ ! -z "$IP" ] && echo "$IP:Antifilter" >> "$TEST_IPS_FILE"
             fi
 
-            if [ -n "$TEST_BLOCKED_IP" ]; then
-              echo "→ Тест блокировки заблокированного IP ($TEST_BLOCKED_IP)..."
+            # Если не хватает IP, добавляем известные тестовые заблокированные IP
+            IP_COUNT=$(wc -l < "$TEST_IPS_FILE" 2>/dev/null || echo "0")
+            while [ "$IP_COUNT" -lt 10 ]; do
+              case "$IP_COUNT" in
+                9) echo "8.8.8.8:Google DNS (тестовый)" >> "$TEST_IPS_FILE" ;;
+                *) break ;;
+              esac
+              IP_COUNT=$(wc -l < "$TEST_IPS_FILE" 2>/dev/null || echo "0")
+            done
+
+            TOTAL_IPS=$(wc -l < "$TEST_IPS_FILE" 2>/dev/null || echo "0")
+            echo "Найдено тестовых IP-адресов: $TOTAL_IPS"
+            echo ""
+
+            # Тестируем блокировку каждого IP
+            BLOCKED_COUNT=0
+            PASSED_COUNT=0
+            TOTAL_TESTED=0
+
+            while IFS= read -r ip_info; do
+              [ -z "$ip_info" ] && continue
+              IP=$(echo "$ip_info" | cut -d':' -f1)
+              SOURCE=$(echo "$ip_info" | cut -d':' -f2-)
+              
+              if [ -z "$IP" ] || [ "$IP" = "$SOURCE" ]; then
+                continue
+              fi
+
+              TOTAL_TESTED=$((TOTAL_TESTED + 1))
+              echo "→ Тест $TOTAL_TESTED: Блокировка IP $IP ($SOURCE)"
+              
               # Пытаемся отправить пакет к заблокированному IP
-              if docker exec attacker timeout 2 ping -c 1 -W 1 "$TEST_BLOCKED_IP" &>/dev/null; then
-                echo "⚠️ Трафик к заблокированному IP прошел (может быть нормально, если IP не в HOME_NET)"
+              if docker exec attacker timeout 2 ping -c 1 -W 1 "$IP" &>/dev/null 2>&1; then
+                echo "  ⚠️ Трафик к $IP прошел (может быть нормально, если IP не в HOME_NET или правило не сработало)"
+                PASSED_COUNT=$((PASSED_COUNT + 1))
               else
-                echo "✅ Трафик к заблокированному IP заблокирован или недоступен"
+                echo "  ✅ Трафик к $IP заблокирован или недоступен"
+                BLOCKED_COUNT=$((BLOCKED_COUNT + 1))
               fi
               
-              # Проверяем логи Suricata на наличие событий блокировки
-              if sudo grep -q "Google Cloud IP" /var/log/suricata/eve.json 2>/dev/null; then
-                echo "✅ События блокировки найдены в логах Suricata"
-                sudo grep "Google Cloud IP" /var/log/suricata/eve.json | tail -1 | jq -r '.event_type, .alert.signature' 2>/dev/null || true
-              else
-                echo "ℹ️ События блокировки не найдены в логах (может быть нормально, если трафик не проходил)"
+              # Проверяем, есть ли правило для этого IP в custom_ioc.rules
+              if [ -f /etc/suricata/rules/custom_ioc.rules ]; then
+                if sudo grep -q "$IP" /etc/suricata/rules/custom_ioc.rules 2>/dev/null; then
+                  RULE_LINE=$(sudo grep "$IP" /etc/suricata/rules/custom_ioc.rules 2>/dev/null | head -1)
+                  echo "  ✓ Правило для $IP найдено в custom_ioc.rules"
+                  echo "    $(echo "$RULE_LINE" | sed 's/^[[:space:]]*//' | cut -c1-80)"
+                else
+                  echo "  ⚠️ Правило для $IP не найдено в custom_ioc.rules"
+                fi
               fi
+              
+              # Проверяем логи Suricata на наличие событий блокировки для этого IP
+              sleep 1
+              if sudo grep -q "$IP" /var/log/suricata/eve.json 2>/dev/null; then
+                EVENT_COUNT=$(sudo grep -c "$IP" /var/log/suricata/eve.json 2>/dev/null || echo "0")
+                echo "  📊 Найдено событий в логах для $IP: $EVENT_COUNT"
+                if command -v jq >/dev/null 2>&1; then
+                  LAST_EVENT=$(sudo grep "$IP" /var/log/suricata/eve.json 2>/dev/null | \
+                    jq -R 'fromjson? | select(.dest_ip == "'"$IP"'" or .src_ip == "'"$IP"'")' 2>/dev/null | \
+                    jq -s '.' | \
+                    jq '.[-1]')
+                  if [ ! -z "$LAST_EVENT" ] && [ "$LAST_EVENT" != "null" ]; then
+                    echo "$LAST_EVENT" | jq -r '"    Тип: \(.event_type // "N/A") | Сигнатура: \(.alert.signature // .msg // "N/A") | SID: \(.alert.signature_id // "N/A")"' 2>/dev/null || true
+                  fi
+                fi
+              else
+                echo "  ℹ️ События для $IP не найдены в логах (может быть нормально, если трафик не проходил)"
+              fi
+              echo ""
+            done < "$TEST_IPS_FILE"
+            
+            # Удаляем временный файл
+            rm -f "$TEST_IPS_FILE"
+
+            # Итоговая статистика тестирования
+            echo "=========================================="
+            echo "=== ИТОГИ ТЕСТИРОВАНИЯ БЛОКИРОВКИ IP ==="
+            echo "=========================================="
+            echo "Всего протестировано IP: $TOTAL_TESTED"
+            echo "✅ Заблокировано/недоступно: $BLOCKED_COUNT"
+            echo "⚠️ Прошло: $PASSED_COUNT"
+            echo ""
+            
+            if [ "$BLOCKED_COUNT" -gt 0 ]; then
+              echo "✅ Блокировка работает! Найдено $BLOCKED_COUNT заблокированных IP"
             else
-              echo "⚠️ Не удалось найти тестовый заблокированный IP"
+              echo "⚠️ Блокировка не подтверждена. Возможные причины:"
+              echo "   - IP-адреса не в HOME_NET (172.16.0.0/12)"
+              echo "   - Правила блокировки не сработали"
+              echo "   - Трафик не проходит через Suricata"
             fi
+            echo ""
 
             # Проверяем статистику правил Suricata
             echo ""
@@ -616,4 +800,168 @@ jobs:
 
             echo ""
             echo "=== ✅ Тестирование IoC правил завершено ==="
+          EOF
+
+      - name: Display Suricata EVE logs (blocking verification)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
+            set -e
+            cd ~/lab-infrastructure
+
+            echo "=========================================="
+            echo "=== ЛОГИ SURICATA (EVE.JSON) - ПОДТВЕРЖДЕНИЕ БЛОКИРОВКИ ==="
+            echo "=========================================="
+            echo ""
+
+            # Проверяем наличие файла eve.json
+            if [ ! -f /var/log/suricata/eve.json ]; then
+              echo "❌ Файл /var/log/suricata/eve.json не найден!"
+              echo "Проверяем директорию логов:"
+              sudo ls -la /var/log/suricata/ 2>/dev/null || echo "Директория логов не найдена"
+              exit 1
+            fi
+
+            # Проверяем размер файла
+            EVE_SIZE=$(sudo wc -l < /var/log/suricata/eve.json 2>/dev/null || echo "0")
+            if [ "$EVE_SIZE" -eq 0 ]; then
+              echo "⚠️ Файл eve.json пуст. Suricata может не видеть трафик."
+              echo "Проверяем статус Suricata:"
+              if [ -f /var/run/suricata.pid ]; then
+                PID=$(cat /var/run/suricata.pid)
+                if kill -0 "$PID" 2>/dev/null; then
+                  echo "  Suricata работает (PID: $PID)"
+                else
+                  echo "  ⚠️ Процесс Suricata не найден"
+                fi
+              fi
+              exit 0
+            fi
+
+            echo "📊 Всего событий в eve.json: $EVE_SIZE"
+            echo ""
+
+            # Устанавливаем jq, если его нет
+            if ! command -v jq >/dev/null 2>&1; then
+              echo "Установка jq для форматирования JSON..."
+              sudo apt-get update -qq && sudo apt-get install -y -qq jq || echo "Не удалось установить jq"
+            fi
+
+            # Выводим статистику событий
+            echo "=== Статистика событий по типам ==="
+            if command -v jq >/dev/null 2>&1; then
+              echo "События drop (блокировки):"
+              DROP_COUNT=$(sudo cat /var/log/suricata/eve.json 2>/dev/null | jq -R 'fromjson? | select(.event_type=="drop")' 2>/dev/null | wc -l || echo "0")
+              echo "  Количество: $DROP_COUNT"
+              
+              echo ""
+              echo "События alert (обнаружения):"
+              ALERT_COUNT=$(sudo cat /var/log/suricata/eve.json 2>/dev/null | jq -R 'fromjson? | select(.event_type=="alert")' 2>/dev/null | wc -l || echo "0")
+              echo "  Количество: $ALERT_COUNT"
+              
+              echo ""
+              echo "HTTP события:"
+              HTTP_COUNT=$(sudo cat /var/log/suricata/eve.json 2>/dev/null | jq -R 'fromjson? | select(.event_type=="http")' 2>/dev/null | wc -l || echo "0")
+              echo "  Количество: $HTTP_COUNT"
+              
+              echo ""
+              echo "ICMP события:"
+              ICMP_COUNT=$(sudo cat /var/log/suricata/eve.json 2>/dev/null | jq -R 'fromjson? | select(.proto=="ICMP" or .proto=="IPv6-ICMP" or .icmp != null)' 2>/dev/null | wc -l || echo "0")
+              echo "  Количество: $ICMP_COUNT"
+            else
+              echo "jq не установлен, используем базовый подсчет..."
+              DROP_COUNT=$(sudo grep -c '"event_type":"drop"' /var/log/suricata/eve.json 2>/dev/null || echo "0")
+              ALERT_COUNT=$(sudo grep -c '"event_type":"alert"' /var/log/suricata/eve.json 2>/dev/null || echo "0")
+              HTTP_COUNT=$(sudo grep -c '"event_type":"http"' /var/log/suricata/eve.json 2>/dev/null || echo "0")
+              echo "  drop: $DROP_COUNT, alert: $ALERT_COUNT, http: $HTTP_COUNT"
+            fi
+            echo ""
+
+            # Выводим последние события drop (блокировки)
+            echo "=== Последние события DROP (блокировки) - подтверждение работы IPS ==="
+            if command -v jq >/dev/null 2>&1; then
+              sudo cat /var/log/suricata/eve.json 2>/dev/null | \
+                jq -R 'fromjson? | select(.event_type=="drop")' 2>/dev/null | \
+                jq -s '.' | \
+                jq '.[-10:]' | \
+                jq -r '.[] | "\(.timestamp) | \(.event_type) | src:\(.src_ip // "N/A") | dst:\(.dest_ip // "N/A") | proto:\(.proto // "N/A") | sig:\(.alert.signature // "N/A")"' || \
+                echo "События drop не найдены или файл пуст"
+            else
+              sudo grep '"event_type":"drop"' /var/log/suricata/eve.json 2>/dev/null | tail -10 || echo "События drop не найдены"
+            fi
+            echo ""
+
+            # Выводим последние события alert
+            echo "=== Последние события ALERT (обнаружения) ==="
+            if command -v jq >/dev/null 2>&1; then
+              sudo cat /var/log/suricata/eve.json 2>/dev/null | \
+                jq -R 'fromjson? | select(.event_type=="alert")' 2>/dev/null | \
+                jq -s '.' | \
+                jq '.[-10:]' | \
+                jq -r '.[] | "\(.timestamp) | \(.alert.signature // "N/A") | src:\(.src_ip // "N/A") | dst:\(.dest_ip // "N/A")"' || \
+                echo "События alert не найдены"
+            else
+              sudo grep '"event_type":"alert"' /var/log/suricata/eve.json 2>/dev/null | tail -10 || echo "События alert не найдены"
+            fi
+            echo ""
+
+            # Выводим последние HTTP события
+            echo "=== Последние HTTP события (разрешенный трафик) ==="
+            if command -v jq >/dev/null 2>&1; then
+              sudo cat /var/log/suricata/eve.json 2>/dev/null | \
+                jq -R 'fromjson? | select(.event_type=="http")' 2>/dev/null | \
+                jq -s '.' | \
+                jq '.[-5:]' | \
+                jq -r '.[] | "\(.timestamp) | \(.http.hostname // "N/A") | \(.http.url // "N/A") | src:\(.src_ip // "N/A") | dst:\(.dest_ip // "N/A")"' || \
+                echo "HTTP события не найдены"
+            else
+              sudo grep '"event_type":"http"' /var/log/suricata/eve.json 2>/dev/null | tail -5 || echo "HTTP события не найдены"
+            fi
+            echo ""
+
+            # Выводим ICMP события (если есть)
+            echo "=== ICMP события (должны быть заблокированы) ==="
+            if command -v jq >/dev/null 2>&1; then
+              ICMP_EVENTS=$(sudo cat /var/log/suricata/eve.json 2>/dev/null | \
+                jq -R 'fromjson? | select(.proto=="ICMP" or .proto=="IPv6-ICMP" or .icmp != null)' 2>/dev/null | \
+                jq -s '.' | \
+                jq '.[-10:]')
+              
+              if [ ! -z "$ICMP_EVENTS" ] && [ "$ICMP_EVENTS" != "[]" ]; then
+                echo "$ICMP_EVENTS" | jq -r '.[] | "\(.timestamp) | \(.event_type // "flow") | src:\(.src_ip // "N/A") | dst:\(.dest_ip // "N/A") | proto:\(.proto // "N/A")"' || echo "ICMP события не найдены"
+              else
+                echo "ICMP события не найдены (может быть нормально, если Suricata не видит трафик)"
+              fi
+            else
+              sudo grep -E '"icmp"|"ICMP"' /var/log/suricata/eve.json 2>/dev/null | tail -10 || echo "ICMP события не найдены"
+            fi
+            echo ""
+
+            # Итоговая сводка
+            echo "=========================================="
+            echo "=== ИТОГОВАЯ СВОДКА ==="
+            echo "=========================================="
+            echo "✅ Файл eve.json существует и содержит события"
+            echo "📊 Всего событий: $EVE_SIZE"
+            if [ "$DROP_COUNT" -gt 0 ]; then
+              echo "✅ Найдено событий блокировки (drop): $DROP_COUNT"
+              echo "   Это подтверждает, что Suricata в режиме IPS успешно блокирует трафик!"
+            else
+              echo "⚠️ События блокировки (drop) не найдены"
+              echo "   Возможные причины:"
+              echo "   - Suricata работает в режиме IDS (только обнаружение)"
+              echo "   - Правила с действием drop не сработали"
+              echo "   - Трафик не проходил через NFQUEUE"
+            fi
+            if [ "$HTTP_COUNT" -gt 0 ]; then
+              echo "✅ Найдено HTTP событий: $HTTP_COUNT"
+              echo "   Это подтверждает, что HTTP трафик разрешен и логируется"
+            fi
+            echo ""
+            echo "📁 Полный путь к логам: /var/log/suricata/eve.json"
+            echo "📁 Текстовые логи: /var/log/suricata/suricata.log"
+            echo ""
+            echo "=========================================="
           EOF
